@@ -198,10 +198,8 @@ class MigratorBase(nn.Module):
             .view(B, N, self.extra_dict["num_key_value_heads"], head_dim)
             .transpose(1, 2)
         )
-        cos, sin = self.extra_dict['rotary_emb'](v, self.extra_dict["position_ids"])
-        q, k = qwen2.apply_rotary_pos_emb(
-            q, k, cos, sin, self.extra_dict["position_ids"]
-        )
+        cos, sin = self.extra_dict['position_embeddings']
+        q, k = qwen2.apply_rotary_pos_emb(q, k, cos, sin)
         k = qwen2.repeat_kv(k, self.extra_dict["num_key_value_groups"])
         v = qwen2.repeat_kv(v, self.extra_dict["num_key_value_groups"])
         if q.device.type == "cuda" and self.extra_dict["attention_mask"] is not None:

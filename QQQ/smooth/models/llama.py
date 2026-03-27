@@ -2,6 +2,7 @@
 import math
 import warnings
 import logging
+from types import SimpleNamespace
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -21,7 +22,8 @@ from transformers.models.llama.modeling_llama import (
     apply_rotary_pos_emb,
     repeat_kv,
 )
-from transformers.cache_utils import Cache, DynamicCache, StaticCache
+from transformers.cache_utils import Cache, DynamicCache
+from transformers.masking_utils import create_causal_mask
 
 from QQQ.smooth.quantization import Quantizer, QuantizedLayer, QuantizedModule
 from QQQ.smooth.migration.migration_llama import migration
@@ -37,7 +39,12 @@ class QuantizedLlamaMLP(LlamaMLP, QuantizedModule):
         QuantizedModule.__init__(self, backend=backend)
         self.w_qconfig = w_qconfig
         self.a_qconfig = a_qconfig
-        self.config = org_module.config
+        if hasattr(org_module, "config"):
+            self.config = org_module.config
+        else:
+            self.config = SimpleNamespace()
+            self.config.hidden_size = org_module.hidden_size
+            self.config.intermediate_size = org_module.intermediate_size
         self.qinput = qinput
         self.hidden_size = org_module.hidden_size
         self.intermediate_size = org_module.intermediate_size
@@ -134,13 +141,13 @@ class QuantizedLlamaAttention(LlamaAttention, QuantizedModule):
                 "when creating this class."
             )
         self.attention_dropout = org_module.attention_dropout
-        self.hidden_size = org_module.hidden_size
-        self.num_heads = org_module.num_heads
+        self.hidden_size = self.config.hidden_size
+        self.num_heads = self.config.num_attention_heads
         self.head_dim = org_module.head_dim
-        self.num_key_value_heads = org_module.num_key_value_heads
+        self.num_key_value_heads = self.config.num_key_value_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
-        self.max_position_embeddings = org_module.max_position_embeddings
-        self.rope_theta = org_module.rope_theta
+        self.max_position_embeddings = self.config.max_position_embeddings
+        self.rope_theta = self.config.rope_theta
         self.is_causal = org_module.is_causal
 
         if (self.head_dim * self.num_heads) != self.hidden_size:
@@ -162,7 +169,6 @@ class QuantizedLlamaAttention(LlamaAttention, QuantizedModule):
         self.o_proj = QuantizedLayer(
             org_module.o_proj, None, w_qconfig, a_qconfig, True
         )
-        self._init_rope()
 
     def forward(
         self,
@@ -173,11 +179,15 @@ class QuantizedLlamaAttention(LlamaAttention, QuantizedModule):
         output_attentions: bool = False,
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         observation_mask = kwargs["observation_mask"]
         bsz, q_len, _ = hidden_states.size()
-        cos, sin = self.rotary_emb(hidden_states, position_ids)
+
+        assert position_embeddings is not None, "position_embeddings must be provided"
+        cos, sin = position_embeddings
+
         # gamma migration
         if self.cac_migrate:
             logger.info(
@@ -201,7 +211,7 @@ class QuantizedLlamaAttention(LlamaAttention, QuantizedModule):
                 "sin_cached": sin,
                 "head_dim": self.head_dim,
                 "position_ids": position_ids,
-                "attention_mask": attention_mask[:, :, cache_position, :q_len],
+                "attention_mask": attention_mask[:, :, cache_position, :q_len] if cache_position is not None and attention_mask is not None else attention_mask,
                 "observation_mask": observation_mask,
             }
             # update scale
@@ -239,7 +249,6 @@ class QuantizedLlamaAttention(LlamaAttention, QuantizedModule):
         past_key_value = getattr(self, "past_key_value", past_key_value)
 
         if past_key_value is not None:
-            # sin and cos are specific to RoPE models; position_ids needed for the static cache
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_value.update(
                 key_states, value_states, self.layer_idx, cache_kwargs
@@ -252,7 +261,7 @@ class QuantizedLlamaAttention(LlamaAttention, QuantizedModule):
             query_states, key_states.transpose(2, 3)
         ) / math.sqrt(self.head_dim)
 
-        if attention_mask is not None:  # no matter the length, we just slice it
+        if attention_mask is not None:
             causal_mask = attention_mask
             if cache_position is not None:
                 causal_mask = attention_mask[
@@ -343,24 +352,11 @@ class QuantizedLlamaDecoderLayer(LlamaDecoderLayer, QuantizedModule):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
     ) -> Tuple[
         torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
     ]:
-        """
-        Args:
-            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-            attention_mask (`torch.FloatTensor`, *optional*):
-                attention mask of size `(batch_size, sequence_length)` if flash attention is used or `(batch_size, 1,
-                query_sequence_length, key_sequence_length)` if default attention is used.
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-            use_cache (`bool`, *optional*):
-                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
-                (see `past_key_values`).
-            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
-        """
         if "padding_mask" in kwargs:
             warnings.warn(
                 "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
@@ -379,6 +375,7 @@ class QuantizedLlamaDecoderLayer(LlamaDecoderLayer, QuantizedModule):
             output_attentions=output_attentions,
             use_cache=use_cache,
             cache_position=cache_position,
+            position_embeddings=position_embeddings,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -419,8 +416,8 @@ class QuantizedLlamaModel(LlamaModel, QuantizedModule):
                 )
             )
         self.norm = org_module.norm
+        self.rotary_emb = org_module.rotary_emb
         self.gradient_checkpointing = False
-        self.causal_mask = org_module.causal_mask
 
     def forward(
         self,
@@ -459,10 +456,11 @@ class QuantizedLlamaModel(LlamaModel, QuantizedModule):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
+        if use_cache and past_key_values is None:
+            past_key_values = DynamicCache()
+
         past_seen_tokens = 0
-        if use_cache:  # kept for BC (cache positions)
-            if not isinstance(past_key_values, StaticCache):
-                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+        if past_key_values is not None:
             past_seen_tokens = past_key_values.get_seq_length()
 
         if cache_position is None:
@@ -476,10 +474,19 @@ class QuantizedLlamaModel(LlamaModel, QuantizedModule):
             position_ids = cache_position.unsqueeze(0)
 
         assert observation_mask is not None
-        causal_mask = self._update_causal_mask(attention_mask, inputs_embeds)
+        causal_mask = create_causal_mask(
+            config=self.config,
+            input_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=past_key_values,
+            position_ids=position_ids,
+        )
 
         # embed positions
         hidden_states = inputs_embeds
+
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
@@ -498,6 +505,7 @@ class QuantizedLlamaModel(LlamaModel, QuantizedModule):
                 output_attentions=output_attentions,
                 use_cache=use_cache,
                 cache_position=cache_position,
+                position_embeddings=position_embeddings,
                 observation_mask=observation_mask,
             )
 
@@ -515,13 +523,7 @@ class QuantizedLlamaModel(LlamaModel, QuantizedModule):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        next_cache = None
-        if use_cache:
-            next_cache = (
-                next_decoder_cache.to_legacy_cache()
-                if isinstance(next_decoder_cache, Cache)
-                else next_decoder_cache
-            )
+        next_cache = next_decoder_cache if use_cache else None
         if not return_dict:
             return tuple(
                 v
@@ -580,31 +582,6 @@ class QuantizedLlamaForCausalLM(LlamaForCausalLM, QuantizedModule):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        r"""
-        Args:
-            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-
-        Returns:
-
-        Example:
-
-        ```python
-        >>> from transformers import AutoTokenizer, LlamaForCausalLM
-
-        >>> model = LlamaForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf")
-        >>> tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
-
-        >>> prompt = "Hey, are you conscious? Can you talk to me?"
-        >>> inputs = tokenizer(prompt, return_tensors="pt")
-
-        >>> # Generate
-        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-        ```"""
         output_attentions = (
             output_attentions
             if output_attentions is not None
@@ -624,7 +601,6 @@ class QuantizedLlamaForCausalLM(LlamaForCausalLM, QuantizedModule):
         else:
             observation_mask = None
 
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -645,14 +621,11 @@ class QuantizedLlamaForCausalLM(LlamaForCausalLM, QuantizedModule):
 
         loss = None
         if labels is not None:
-            # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
-            # Flatten the tokens
             loss_fct = CrossEntropyLoss()
             shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
-            # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
 

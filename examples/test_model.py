@@ -50,7 +50,7 @@ if __name__ == "__main__":
         config=config,
         quant_config=quant_config,
         device_map="sequential",
-        torch_dtype=torch.float16,
+        dtype=torch.float16,
     )
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer_path,

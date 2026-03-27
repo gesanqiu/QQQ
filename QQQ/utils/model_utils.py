@@ -26,13 +26,15 @@ _MODEL_TYPE = {
 def build_model_and_tokenizer(
     model_path, tokenizer_path, dtype: str, trust_remote_code: bool = True
 ):
+    model_path = model_path.rstrip("/")
+    tokenizer_path = tokenizer_path.rstrip("/")
     tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_path, trust_remote_code=trust_remote_code
     )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
     kwargs = {
-        "torch_dtype": str2torch_dtype(dtype),
+        "dtype": str2torch_dtype(dtype),
         "device_map": "auto",
     }
     model = AutoModelForCausalLM.from_pretrained(

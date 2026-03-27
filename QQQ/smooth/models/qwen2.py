@@ -21,11 +21,8 @@ from transformers.models.qwen2.modeling_qwen2 import (
     apply_rotary_pos_emb,
     repeat_kv,
 )
-from transformers.modeling_attn_mask_utils import (
-    _prepare_4d_causal_attention_mask,
-    _prepare_4d_causal_attention_mask_for_sdpa,
-)
 from transformers.cache_utils import Cache, DynamicCache
+from transformers.masking_utils import create_causal_mask
 
 from QQQ.smooth.quantization import Quantizer, QuantizedLayer, QuantizedModule
 from QQQ.smooth.migration.migration_qwen2 import migration
@@ -41,15 +38,13 @@ class QuantizedQwen2MLP(Qwen2MLP, QuantizedModule):
         QuantizedModule.__init__(self, backend=backend)
         self.w_qconfig = w_qconfig
         self.a_qconfig = a_qconfig
-        
+
         if hasattr(org_module, 'config'):
             self.config = org_module.config
         else:
             self.config = SimpleNamespace()
             self.config.hidden_size = org_module.hidden_size
             self.config.intermediate_size = org_module.intermediate_size
-        
-        self.config = org_module.config
         self.qinput = qinput
         self.hidden_size = org_module.hidden_size
         self.intermediate_size = org_module.intermediate_size
@@ -137,8 +132,7 @@ class QuantizedQwen2Attention(Qwen2Attention, QuantizedModule):
         QuantizedModule.__init__(self, backend=backend)
         self.w_qconfig = w_qconfig
         self.a_qconfig = a_qconfig
-        if hasattr(org_module, 'config'):
-            self.config = org_module.config        
+        self.config = org_module.config
         self.qinput = qinput
         self.layer_idx = org_module.layer_idx
 
@@ -149,13 +143,13 @@ class QuantizedQwen2Attention(Qwen2Attention, QuantizedModule):
                 "when creating this class."
             )
         self.attention_dropout = org_module.attention_dropout
-        self.hidden_size = org_module.hidden_size
-        self.num_heads = org_module.num_heads
+        self.hidden_size = self.config.hidden_size
+        self.num_heads = self.config.num_attention_heads
         self.head_dim = org_module.head_dim
-        self.num_key_value_heads = org_module.num_key_value_heads
+        self.num_key_value_heads = self.config.num_key_value_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
-        self.max_position_embeddings = org_module.max_position_embeddings
-        self.rope_theta = org_module.rope_theta
+        self.max_position_embeddings = self.config.max_position_embeddings
+        self.rope_theta = self.config.rope_theta
         self.is_causal = org_module.is_causal
 
         if (self.head_dim * self.num_heads) != self.hidden_size:
@@ -177,9 +171,7 @@ class QuantizedQwen2Attention(Qwen2Attention, QuantizedModule):
         self.o_proj = QuantizedLayer(
             org_module.o_proj, None, w_qconfig, a_qconfig, True
         )
-        self.rotary_emb = org_module.rotary_emb
 
-    # NOTE(HandH1998): use Qwen2SdpaAttention forward
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -189,12 +181,15 @@ class QuantizedQwen2Attention(Qwen2Attention, QuantizedModule):
         output_attentions: bool = False,
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.46
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         assert not output_attentions
         observation_mask = kwargs["observation_mask"]
         bsz, q_len, _ = hidden_states.size()
+
+        assert position_embeddings is not None, "position_embeddings must be provided"
+
         # gamma migration
         if self.cac_migrate:
             logger.info(
@@ -221,12 +216,11 @@ class QuantizedQwen2Attention(Qwen2Attention, QuantizedModule):
                 "num_heads": self.num_heads,
                 "num_key_value_heads": self.num_key_value_heads,
                 "num_key_value_groups": self.num_key_value_groups,
-                "rotary_emb": self.rotary_emb,               
+                "position_embeddings": position_embeddings,
                 "head_dim": self.head_dim,
                 "position_ids": position_ids,
                 "attention_mask": attention_mask,
                 "cache_position": cache_position,
-                "position_embeddings": position_embeddings,
                 "observation_mask": observation_mask,
             }
             # update scale
@@ -262,14 +256,14 @@ class QuantizedQwen2Attention(Qwen2Attention, QuantizedModule):
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
-        cos, sin = self.rotary_emb(value_states, position_ids)
+        cos, sin = position_embeddings
 
         query_states, key_states = apply_rotary_pos_emb(
             query_states, key_states, cos, sin
         )
 
         if past_key_value is not None:
-            cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
+            cache_kwargs = {"sin": sin, "cos": cos}
             key_states, value_states = past_key_value.update(
                 key_states, value_states, self.layer_idx, cache_kwargs
             )
@@ -283,8 +277,6 @@ class QuantizedQwen2Attention(Qwen2Attention, QuantizedModule):
                     f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
                 )
 
-        # SDPA with memory-efficient backend is currently (torch==2.1.2) bugged with non-contiguous inputs with custom attn_mask,
-        # Reference: https://github.com/pytorch/pytorch/issues/112577.
         if query_states.device.type == "cuda" and attention_mask is not None:
             query_states = query_states.contiguous()
             key_states = key_states.contiguous()
@@ -296,7 +288,6 @@ class QuantizedQwen2Attention(Qwen2Attention, QuantizedModule):
             value_states,
             attn_mask=attention_mask,
             dropout_p=self.attention_dropout if self.training else 0.0,
-            # The q_len > 1 is necessary to match with AttentionMaskConverter.to_causal_4d that does not create a causal mask in case q_len == 1.
             is_causal=self.is_causal and attention_mask is None and q_len > 1,
         )
 
@@ -369,7 +360,7 @@ class QuantizedQwen2DecoderLayer(Qwen2DecoderLayer, QuantizedModule):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.46
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
     ) -> Tuple[
         torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
@@ -379,19 +370,6 @@ class QuantizedQwen2DecoderLayer(Qwen2DecoderLayer, QuantizedModule):
                 "Passing `padding_mask` is deprecated and will be removed in v4.37. "
                 "Please make sure use `attention_mask` instead.`"
             )
-        """
-        Args:
-            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
-                `(batch, sequence_length)` where padding elements are indicated by 0.
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-            use_cache (`bool`, *optional*):
-                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
-                (see `past_key_values`).
-            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
-        """
 
         residual = hidden_states
 
@@ -405,6 +383,8 @@ class QuantizedQwen2DecoderLayer(Qwen2DecoderLayer, QuantizedModule):
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -444,9 +424,6 @@ class QuantizedQwen2Model(Qwen2Model, QuantizedModule):
                     org_module.layers[i], w_qconfig, a_qconfig, qinput=True
                 )
             )
-        self._attn_implementation = org_module._attn_implementation
-        # NOTE(HandH1998): Qwen2 fp16 is abnormal for `eager` attention, here we only support `sdpa`
-        assert self._attn_implementation == "sdpa"
         self.rotary_emb = org_module.rotary_emb
         self.norm = org_module.norm
         self.gradient_checkpointing = False
@@ -481,7 +458,6 @@ class QuantizedQwen2Model(Qwen2Model, QuantizedModule):
             return_dict if return_dict is not None else self.config.use_return_dict
         )
 
-        # retrieve input_ids and inputs_embeds
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError(
                 "You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time"
@@ -495,68 +471,36 @@ class QuantizedQwen2Model(Qwen2Model, QuantizedModule):
                 "You have to specify either decoder_input_ids or decoder_inputs_embeds"
             )
 
-        past_key_values_length = 0
+        if use_cache and past_key_values is None:
+            past_key_values = DynamicCache()
 
-        if use_cache:
-            use_legacy_cache = not isinstance(past_key_values, Cache)
-            if use_legacy_cache:
-                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-            past_key_values_length = past_key_values.get_usable_length(seq_length)
+        past_seen_tokens = 0
+        if past_key_values is not None:
+            past_seen_tokens = past_key_values.get_seq_length()
 
-        if position_ids is None:
+        if cache_position is None:
             device = input_ids.device if input_ids is not None else inputs_embeds.device
-            position_ids = torch.arange(
-                past_key_values_length,
-                seq_length + past_key_values_length,
-                dtype=torch.long,
+            cache_position = torch.arange(
+                past_seen_tokens,
+                past_seen_tokens + seq_length,
                 device=device,
             )
-            position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
-        else:
-            position_ids = position_ids.view(-1, seq_length).long()
+
+        if position_ids is None:
+            position_ids = cache_position.unsqueeze(0)
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
         assert observation_mask is not None
-        if (
-            attention_mask is not None
-            and self._attn_implementation == "flash_attention_2"
-            and use_cache
-        ):
-            is_padding_right = attention_mask[:, -1].sum().item() != batch_size
-            if is_padding_right:
-                raise ValueError(
-                    "You are attempting to perform batched generation with padding_side='right'"
-                    " this may lead to unexpected behaviour for Flash Attention version of Qwen2. Make sure to "
-                    " call `tokenizer.padding_side  = 'left'` before tokenizing the input. "
-                )
-
-        if self._attn_implementation == "flash_attention_2":
-            # 2d mask is passed through the layers
-            attention_mask = (
-                attention_mask
-                if (attention_mask is not None and 0 in attention_mask)
-                else None
-            )
-        elif self._attn_implementation == "sdpa" and not output_attentions:
-            # output_attentions=True can not be supported when using SDPA, and we fall back on
-            # the manual implementation that requires a 4D causal mask in all cases.
-            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (batch_size, seq_length),
-                inputs_embeds,
-                past_key_values_length,
-            )
-        else:
-            # 4d mask is passed through the layers
-            attention_mask = _prepare_4d_causal_attention_mask(
-                attention_mask,
-                (batch_size, seq_length),
-                inputs_embeds,
-                past_key_values_length,
-                sliding_window=self.config.sliding_window,
-            )
+        causal_mask = create_causal_mask(
+            config=self.config,
+            input_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=past_key_values,
+            position_ids=position_ids,
+        )
 
         hidden_states = inputs_embeds
 
@@ -573,7 +517,7 @@ class QuantizedQwen2Model(Qwen2Model, QuantizedModule):
 
             layer_outputs = decoder_layer(
                 hidden_states,
-                attention_mask=attention_mask,
+                attention_mask=causal_mask,
                 position_ids=position_ids,
                 past_key_value=past_key_values,
                 output_attentions=output_attentions,
@@ -597,13 +541,7 @@ class QuantizedQwen2Model(Qwen2Model, QuantizedModule):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        next_cache = None
-        if use_cache:
-            next_cache = (
-                next_decoder_cache.to_legacy_cache()
-                if use_legacy_cache
-                else next_decoder_cache
-            )
+        next_cache = next_decoder_cache if use_cache else None
 
         if not return_dict:
             return tuple(
@@ -663,32 +601,6 @@ class QuantizedQwen2ForCausalLM(Qwen2ForCausalLM, QuantizedModule):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        r"""
-        Args:
-            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-
-        Returns:
-
-        Example:
-
-        ```python
-        >>> from transformers import AutoTokenizer, Qwen2ForCausalLM
-
-        >>> model = Qwen2ForCausalLM.from_pretrained(PATH_TO_CONVERTED_WEIGHTS)
-        >>> tokenizer = AutoTokenizer.from_pretrained(PATH_TO_CONVERTED_TOKENIZER)
-
-        >>> prompt = "Hey, are you conscious? Can you talk to me?"
-        >>> inputs = tokenizer(prompt, return_tensors="pt")
-
-        >>> # Generate
-        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-        ```"""
-
         output_attentions = (
             output_attentions
             if output_attentions is not None
@@ -708,7 +620,6 @@ class QuantizedQwen2ForCausalLM(Qwen2ForCausalLM, QuantizedModule):
         else:
             observation_mask = None
 
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -729,14 +640,11 @@ class QuantizedQwen2ForCausalLM(Qwen2ForCausalLM, QuantizedModule):
 
         loss = None
         if labels is not None:
-            # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
-            # Flatten the tokens
             loss_fct = CrossEntropyLoss()
             shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
-            # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
 
