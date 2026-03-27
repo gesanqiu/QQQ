@@ -1,6 +1,7 @@
-""" PyTorch QuantizedLLaMA model."""
-import warnings
+"""PyTorch QuantizedLLaMA model."""
+
 import logging
+import warnings
 from types import SimpleNamespace
 from typing import List, Optional, Tuple, Union
 
@@ -8,38 +9,36 @@ import torch
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import CrossEntropyLoss
+from transformers.cache_utils import Cache, DynamicCache
+from transformers.masking_utils import create_causal_mask
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
 )
 from transformers.models.qwen2.modeling_qwen2 import (
-    Qwen2MLP,
     Qwen2Attention,
     Qwen2DecoderLayer,
-    Qwen2Model,
     Qwen2ForCausalLM,
+    Qwen2MLP,
+    Qwen2Model,
     apply_rotary_pos_emb,
     repeat_kv,
 )
-from transformers.cache_utils import Cache, DynamicCache
-from transformers.masking_utils import create_causal_mask
 
-from QQQ.smooth.quantization import Quantizer, QuantizedLayer, QuantizedModule
 from QQQ.smooth.migration.migration_qwen2 import migration
+from QQQ.smooth.quantization import QuantizedLayer, QuantizedModule, Quantizer
 
 logger = logging.getLogger("QQQ")
 
 
 class QuantizedQwen2MLP(Qwen2MLP, QuantizedModule):
-    def __init__(
-        self, org_module, w_qconfig, a_qconfig, qinput=True, backend="academic"
-    ):
+    def __init__(self, org_module, w_qconfig, a_qconfig, qinput=True, backend="academic"):
         super(Qwen2MLP, self).__init__()
         QuantizedModule.__init__(self, backend=backend)
         self.w_qconfig = w_qconfig
         self.a_qconfig = a_qconfig
 
-        if hasattr(org_module, 'config'):
+        if hasattr(org_module, "config"):
             self.config = org_module.config
         else:
             self.config = SimpleNamespace()
@@ -49,34 +48,24 @@ class QuantizedQwen2MLP(Qwen2MLP, QuantizedModule):
         self.hidden_size = org_module.hidden_size
         self.intermediate_size = org_module.intermediate_size
         self.act_fake_quant = Quantizer(None, a_qconfig)
-        self.gate_proj = QuantizedLayer(
-            org_module.gate_proj, None, w_qconfig, a_qconfig, self.qinput
-        )
-        self.up_proj = QuantizedLayer(
-            org_module.up_proj, None, w_qconfig, a_qconfig, self.qinput
-        )
+        self.gate_proj = QuantizedLayer(org_module.gate_proj, None, w_qconfig, a_qconfig, self.qinput)
+        self.up_proj = QuantizedLayer(org_module.up_proj, None, w_qconfig, a_qconfig, self.qinput)
         if getattr(self.a_qconfig, "disable_down_proj", False):
             self.down_proj = org_module.mlp.down_proj
         else:
             self.a_qconfig.disable_down_proj = False
-            self.down_proj = QuantizedLayer(
-                org_module.down_proj, None, w_qconfig, a_qconfig, True
-            )
+            self.down_proj = QuantizedLayer(org_module.down_proj, None, w_qconfig, a_qconfig, True)
         self.act_fn = org_module.act_fn
 
     def forward(self, hidden_states, **kwargs):
         observation_mask = kwargs["observation_mask"]
         if self.cac_migrate:
             logger.info(
-                "the original min range is {}, the original max range is {}".format(
-                    hidden_states.min(), hidden_states.max()
-                )
+                f"the original min range is {hidden_states.min()}, the original max range is {hidden_states.max()}"
             )
 
             # calculate scale
-            weight_list = torch.cat(
-                [self.gate_proj.module.weight, self.up_proj.module.weight]
-            )
+            weight_list = torch.cat([self.gate_proj.module.weight, self.up_proj.module.weight])
             extra_dict = {"observation_mask": observation_mask, "act_fn": self.act_fn}
             best_scale = migration(
                 hidden_states,
@@ -94,15 +83,11 @@ class QuantizedQwen2MLP(Qwen2MLP, QuantizedModule):
 
         hidden_states = self.act_fake_quant(hidden_states, observation_mask, 1)
 
-        hidden_states = self.act_fn(self.gate_proj(hidden_states)) * self.up_proj(
-            hidden_states
-        )
+        hidden_states = self.act_fn(self.gate_proj(hidden_states)) * self.up_proj(hidden_states)
 
         if not self.a_qconfig.disable_down_proj and self.cac_migrate:
             logger.info(
-                "the original min range is {}, the original max range is {}".format(
-                    hidden_states.min(), hidden_states.max()
-                )
+                f"the original min range is {hidden_states.min()}, the original max range is {hidden_states.max()}"
             )
             weight_list = torch.cat([self.down_proj.module.weight])
             extra_dict = {
@@ -125,9 +110,7 @@ class QuantizedQwen2MLP(Qwen2MLP, QuantizedModule):
 
 
 class QuantizedQwen2Attention(Qwen2Attention, QuantizedModule):
-    def __init__(
-        self, org_module, w_qconfig, a_qconfig, qinput=True, backend="academic"
-    ):
+    def __init__(self, org_module, w_qconfig, a_qconfig, qinput=True, backend="academic"):
         super(Qwen2Attention, self).__init__()
         QuantizedModule.__init__(self, backend=backend)
         self.w_qconfig = w_qconfig
@@ -159,31 +142,23 @@ class QuantizedQwen2Attention(Qwen2Attention, QuantizedModule):
             )
 
         self.act_fake_quant = Quantizer(None, a_qconfig)
-        self.q_proj = QuantizedLayer(
-            org_module.q_proj, None, w_qconfig, a_qconfig, self.qinput
-        )
-        self.k_proj = QuantizedLayer(
-            org_module.k_proj, None, w_qconfig, a_qconfig, self.qinput
-        )
-        self.v_proj = QuantizedLayer(
-            org_module.v_proj, None, w_qconfig, a_qconfig, self.qinput
-        )
-        self.o_proj = QuantizedLayer(
-            org_module.o_proj, None, w_qconfig, a_qconfig, True
-        )
+        self.q_proj = QuantizedLayer(org_module.q_proj, None, w_qconfig, a_qconfig, self.qinput)
+        self.k_proj = QuantizedLayer(org_module.k_proj, None, w_qconfig, a_qconfig, self.qinput)
+        self.v_proj = QuantizedLayer(org_module.v_proj, None, w_qconfig, a_qconfig, self.qinput)
+        self.o_proj = QuantizedLayer(org_module.o_proj, None, w_qconfig, a_qconfig, True)
 
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_value: Cache | None = None,
         output_attentions: bool = False,
         use_cache: bool = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        cache_position: torch.LongTensor | None = None,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         **kwargs,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, tuple[torch.Tensor] | None]:
         assert not output_attentions
         observation_mask = kwargs["observation_mask"]
         bsz, q_len, _ = hidden_states.size()
@@ -193,9 +168,7 @@ class QuantizedQwen2Attention(Qwen2Attention, QuantizedModule):
         # gamma migration
         if self.cac_migrate:
             logger.info(
-                "the original min range is {}, the original max range is {}".format(
-                    hidden_states.min(), hidden_states.max()
-                )
+                f"the original min range is {hidden_states.min()}, the original max range is {hidden_states.max()}"
             )
             # calculate scale
             weight_list = torch.cat(
@@ -243,30 +216,20 @@ class QuantizedQwen2Attention(Qwen2Attention, QuantizedModule):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
-        query_states = query_states.view(
-            bsz, q_len, self.num_heads, self.head_dim
-        ).transpose(1, 2)
-        key_states = key_states.view(
-            bsz, q_len, self.num_key_value_heads, self.head_dim
-        ).transpose(1, 2)
-        value_states = value_states.view(
-            bsz, q_len, self.num_key_value_heads, self.head_dim
-        ).transpose(1, 2)
+        query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
         cos, sin = position_embeddings
 
-        query_states, key_states = apply_rotary_pos_emb(
-            query_states, key_states, cos, sin
-        )
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
         if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos}
-            key_states, value_states = past_key_value.update(
-                key_states, value_states, self.layer_idx, cache_kwargs
-            )
+            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
@@ -296,11 +259,7 @@ class QuantizedQwen2Attention(Qwen2Attention, QuantizedModule):
 
         # out migration
         if self.cac_migrate:
-            logger.info(
-                "the original min range is {}, the original max range is {}".format(
-                    attn_output.min(), attn_output.max()
-                )
-            )
+            logger.info(f"the original min range is {attn_output.min()}, the original max range is {attn_output.max()}")
             weight_list = torch.cat([self.o_proj.module.weight])
             extra_dict = {
                 "observation_mask": observation_mask,
@@ -327,9 +286,7 @@ class QuantizedQwen2Attention(Qwen2Attention, QuantizedModule):
 
 
 class QuantizedQwen2DecoderLayer(Qwen2DecoderLayer, QuantizedModule):
-    def __init__(
-        self, org_module, w_qconfig, a_qconfig, qinput=True, backend="academic"
-    ):
+    def __init__(self, org_module, w_qconfig, a_qconfig, qinput=True, backend="academic"):
         super(Qwen2DecoderLayer, self).__init__()
         QuantizedModule.__init__(self, backend=backend)
         self.w_qconfig = w_qconfig
@@ -354,17 +311,15 @@ class QuantizedQwen2DecoderLayer(Qwen2DecoderLayer, QuantizedModule):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor]] = None,
-        output_attentions: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_value: tuple[torch.Tensor] | None = None,
+        output_attentions: bool | None = False,
+        use_cache: bool | None = False,
+        cache_position: torch.LongTensor | None = None,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         **kwargs,
-    ) -> Tuple[
-        torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
-    ]:
+    ) -> tuple[torch.FloatTensor, tuple[torch.FloatTensor, torch.FloatTensor] | None]:
         if "padding_mask" in kwargs:
             warnings.warn(
                 "Passing `padding_mask` is deprecated and will be removed in v4.37. "
@@ -407,9 +362,7 @@ class QuantizedQwen2DecoderLayer(Qwen2DecoderLayer, QuantizedModule):
 
 
 class QuantizedQwen2Model(Qwen2Model, QuantizedModule):
-    def __init__(
-        self, org_module, w_qconfig, a_qconfig, qinput=True, backend="academic"
-    ):
+    def __init__(self, org_module, w_qconfig, a_qconfig, qinput=True, backend="academic"):
         super(Qwen2Model, self).__init__(org_module.config)
         QuantizedModule.__init__(self, backend=backend)
         self.qinput = qinput
@@ -419,11 +372,7 @@ class QuantizedQwen2Model(Qwen2Model, QuantizedModule):
         self.embed_tokens = org_module.embed_tokens
         self.layers = nn.ModuleList()
         for i in range(self.config.num_hidden_layers):
-            self.layers.append(
-                QuantizedQwen2DecoderLayer(
-                    org_module.layers[i], w_qconfig, a_qconfig, qinput=True
-                )
-            )
+            self.layers.append(QuantizedQwen2DecoderLayer(org_module.layers[i], w_qconfig, a_qconfig, qinput=True))
         self.rotary_emb = org_module.rotary_emb
         self.norm = org_module.norm
         self.gradient_checkpointing = False
@@ -431,45 +380,33 @@ class QuantizedQwen2Model(Qwen2Model, QuantizedModule):
     def forward(
         self,
         input_ids: torch.LongTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-        observation_mask: Optional[torch.Tensor] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-    ) -> Union[Tuple, BaseModelOutputWithPast]:
-        output_attentions = (
-            output_attentions
-            if output_attentions is not None
-            else self.config.output_attentions
-        )
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: list[torch.FloatTensor] | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        return_dict: bool | None = None,
+        observation_mask: torch.Tensor | None = None,
+        cache_position: torch.LongTensor | None = None,
+    ) -> tuple | BaseModelOutputWithPast:
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
-            output_hidden_states
-            if output_hidden_states is not None
-            else self.config.output_hidden_states
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
         use_cache = use_cache if use_cache is not None else self.config.use_cache
 
-        return_dict = (
-            return_dict if return_dict is not None else self.config.use_return_dict
-        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if input_ids is not None and inputs_embeds is not None:
-            raise ValueError(
-                "You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time"
-            )
+            raise ValueError("You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
         elif input_ids is not None:
             batch_size, seq_length = input_ids.shape
         elif inputs_embeds is not None:
             batch_size, seq_length, _ = inputs_embeds.shape
         else:
-            raise ValueError(
-                "You have to specify either decoder_input_ids or decoder_inputs_embeds"
-            )
+            raise ValueError("You have to specify either decoder_input_ids or decoder_inputs_embeds")
 
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache()
@@ -544,11 +481,7 @@ class QuantizedQwen2Model(Qwen2Model, QuantizedModule):
         next_cache = next_decoder_cache if use_cache else None
 
         if not return_dict:
-            return tuple(
-                v
-                for v in [hidden_states, next_cache, all_hidden_states, all_self_attns]
-                if v is not None
-            )
+            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=next_cache,
@@ -578,9 +511,7 @@ class QuantizedQwen2ForCausalLM(Qwen2ForCausalLM, QuantizedModule):
         ]
         self.qinput = qinput
         self.vocab_size = org_module.vocab_size
-        self.model = QuantizedQwen2Model(
-            org_module.model, w_qconfig, a_qconfig, self.qinput, backend=self.backend
-        )
+        self.model = QuantizedQwen2Model(org_module.model, w_qconfig, a_qconfig, self.qinput, backend=self.backend)
         self.lm_head = org_module.lm_head
         self.is_remove_padding = is_remove_padding
 
@@ -590,30 +521,22 @@ class QuantizedQwen2ForCausalLM(Qwen2ForCausalLM, QuantizedModule):
     def forward(
         self,
         input_ids: torch.LongTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-    ) -> Union[Tuple, CausalLMOutputWithPast]:
-        output_attentions = (
-            output_attentions
-            if output_attentions is not None
-            else self.config.output_attentions
-        )
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: list[torch.FloatTensor] | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        labels: torch.LongTensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        return_dict: bool | None = None,
+        cache_position: torch.LongTensor | None = None,
+    ) -> tuple | CausalLMOutputWithPast:
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
-            output_hidden_states
-            if output_hidden_states is not None
-            else self.config.output_hidden_states
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        return_dict = (
-            return_dict if return_dict is not None else self.config.use_return_dict
-        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if self.is_remove_padding and attention_mask is not None:
             observation_mask = attention_mask.clone()

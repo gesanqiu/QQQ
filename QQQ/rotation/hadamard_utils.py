@@ -1,5 +1,7 @@
-import torch, math
+import math
+
 import fast_hadamard_transform
+import torch
 
 # Adapted from https://github.com/Cornell-RelaxML/quip-sharp/blob/main/lib/utils/matmul_had.py
 
@@ -96,15 +98,11 @@ def random_hadamard_matrix(size, device):
 def matmul_hadU_cuda(X, hadK, K):
     n = X.shape[-1]
     if K == 1:
-        return fast_hadamard_transform.hadamard_transform(
-            X.contiguous(), 1.0 / torch.tensor(n).sqrt()
-        )
+        return fast_hadamard_transform.hadamard_transform(X.contiguous(), 1.0 / torch.tensor(n).sqrt())
     # if transpose:
     #     hadK = hadK.T.contiguous()
     input = X.view(-1, K, n // K)
-    input = fast_hadamard_transform.hadamard_transform(
-        input.contiguous(), 1.0 / torch.tensor(n).sqrt()
-    )
+    input = fast_hadamard_transform.hadamard_transform(input.contiguous(), 1.0 / torch.tensor(n).sqrt())
     input = hadK.to(input.device).to(input.dtype) @ input
     return input.reshape(X.shape)
 

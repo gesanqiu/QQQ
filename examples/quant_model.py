@@ -1,17 +1,19 @@
 import argparse
 import logging
 import os
+
 import torch
-from QQQ.rotation import fuse_layer_norms, rotate_model
-from QQQ.smooth import smooth, export_smoothed_model, quantize_model
+
 from QQQ.gptq import apply_gptq
+from QQQ.rotation import fuse_layer_norms, rotate_model
+from QQQ.smooth import export_smoothed_model, quantize_model, smooth
 from QQQ.utils import (
-    setup_seed,
     build_model_and_tokenizer,
-    prepare_for_inference,
     free_memory,
-    str2bool,
+    prepare_for_inference,
     remove_empty_parameters,
+    setup_seed,
+    str2bool,
 )
 
 logger = logging.getLogger("QQQ")
@@ -19,9 +21,7 @@ logger = logging.getLogger("QQQ")
 
 # NOTE(HandH1998): If enable smooth, it is recommended to use the default configuration, no need to change
 def parse_a_qconfig(args):
-    parser = argparse.ArgumentParser(
-        description="Activation Quantization Configuration Parser", add_help=False
-    )
+    parser = argparse.ArgumentParser(description="Activation Quantization Configuration Parser", add_help=False)
 
     parser.add_argument(
         "--a_quantizer",
@@ -63,13 +63,12 @@ def parse_a_qconfig(args):
     return args, remaining_args
 
 
-# NOTE(HandH1998): If enable smooth, `w_quantizer=FixedQuantize, w_group_size=-1` is for weight per-channel quantizaiton,
+# NOTE(HandH1998): If enable smooth,
+# `w_quantizer=FixedQuantize, w_group_size=-1` is for weight per-channel quantization,
 # `w_quantizer=GroupFixedQuantize, w_group_size=128` is for weight per-group quantization.
 # The other parameters can use the default configuration.
 def parse_w_qconfig(args):
-    parser = argparse.ArgumentParser(
-        description="Weight Quantization Configuration Parser", add_help=False
-    )
+    parser = argparse.ArgumentParser(description="Weight Quantization Configuration Parser", add_help=False)
 
     parser.add_argument(
         "--w_quantizer",
@@ -120,11 +119,10 @@ def parse_w_qconfig(args):
     return args, remaining_args
 
 
-# NOTE(HandH1998): If enable smooth, the `calibrate_path` should be changed to your own data path. The other parameters can use the default configuration.
+# NOTE(HandH1998): If enable smooth, the `calibrate_path` should be changed to your own data path.
+# The other parameters can use the default configuration.
 def parse_smooth_args(args):
-    parser = argparse.ArgumentParser(
-        description="Smooth Configuration Parser", add_help=False
-    )
+    parser = argparse.ArgumentParser(description="Smooth Configuration Parser", add_help=False)
     # Calibration
     parser.add_argument(
         "--batch_size",
@@ -143,9 +141,7 @@ def parse_smooth_args(args):
     )
 
     # Smooth method
-    parser.add_argument(
-        "--smooth_method", dest="smooth_method", type=str, default="os+"
-    )
+    parser.add_argument("--smooth_method", dest="smooth_method", type=str, default="os+")
     smooth_args, remaining_args = parser.parse_known_args(args)
     smooth_args.a_qconfig, remaining_args = parse_a_qconfig(remaining_args)
     smooth_args.w_qconfig, remaining_args = parse_w_qconfig(remaining_args)
@@ -155,9 +151,7 @@ def parse_smooth_args(args):
 # NOTE(HandH1998): `gptq_mse=False` is for `Smooth + GPTQ`, `gptq_mse=True` is for `Rotation + GPTQ`.
 # `gptq_groupsize=-1` is for per-channel weight quantization, `gptq_groupsize=128` is for per-group weight quantization
 def parse_gptq_args(args):
-    parser = argparse.ArgumentParser(
-        description="GPTQ Configuration Parser", add_help=False
-    )
+    parser = argparse.ArgumentParser(description="GPTQ Configuration Parser", add_help=False)
     parser.add_argument(
         "--gptq_sym",
         dest="sym",
@@ -171,11 +165,12 @@ def parse_gptq_args(args):
         type=int,
         default=-1,
         choices=[-1, 128],
-        help="Group size for GPTQ (-1 for per-channel, 128 for per-group), it should be same with w_group_size when enable smooth",
+        help=(
+            "Group size for GPTQ (-1 for per-channel, 128 for per-group),"
+            " it should be same with w_group_size when enable smooth"
+        ),
     )
-    parser.add_argument(
-        "--gptq_mse", dest="mse", type=str2bool, default=True, help="Use MSE for GPTQ"
-    )
+    parser.add_argument("--gptq_mse", dest="mse", type=str2bool, default=True, help="Use MSE for GPTQ")
     parser.add_argument(
         "--gptq_act_order",
         dest="act_order",
@@ -211,13 +206,9 @@ def parse_gptq_args(args):
 
 
 def parse_rotation_args(args):
-    parser = argparse.ArgumentParser(
-        description="Rotation Configuration Parser", add_help=False
-    )
+    parser = argparse.ArgumentParser(description="Rotation Configuration Parser", add_help=False)
 
-    parser.add_argument(
-        "--rotate_mode", type=str, default="hadamard", choices=["hadamard", "random"]
-    )
+    parser.add_argument("--rotate_mode", type=str, default="hadamard", choices=["hadamard", "random"])
 
     args, remaining_args = parser.parse_known_args(args)
     return args, remaining_args
@@ -251,7 +242,10 @@ def parse_args():
         "--custom_dataset",
         type=str,
         default="",
-        help="Custom Calibration Dataset. It should be your own dataset path. If you want to use the public dataset, this should be the default value",
+        help=(
+            "Custom Calibration Dataset. It should be your own dataset path."
+            " If you want to use the public dataset, this should be the default value"
+        ),
     )
     parser.add_argument(
         "--nsamples",
@@ -283,9 +277,7 @@ def main():
         args.tokenizer_path = args.model_path
 
     # load model
-    model, tokenizer = build_model_and_tokenizer(
-        args.model_path, args.tokenizer_path, args.dtype
-    )
+    model, tokenizer = build_model_and_tokenizer(args.model_path, args.tokenizer_path, args.dtype)
 
     # rotate model
     if args.rotation:
@@ -304,9 +296,7 @@ def main():
         free_memory()
 
         # load model and apply smooth scales
-        model, tokenizer = build_model_and_tokenizer(
-            args.model_path, args.tokenizer_path, args.dtype
-        )
+        model, tokenizer = build_model_and_tokenizer(args.model_path, args.tokenizer_path, args.dtype)
         if args.rotation:
             # NOTE(HandH1998): smooth scale should work on the rotated model
             model = fuse_layer_norms(model)
@@ -330,9 +320,7 @@ def main():
     state_dict = remove_empty_parameters(model)
     model.save_pretrained(args.save_path, state_dict=state_dict)
     tokenizer.save_pretrained(args.save_path)
-    logger.info(
-        "Quant Finished! The quantized model is saved at {}.".format(args.save_path)
-    )
+    logger.info(f"Quant Finished! The quantized model is saved at {args.save_path}.")
 
 
 if __name__ == "__main__":

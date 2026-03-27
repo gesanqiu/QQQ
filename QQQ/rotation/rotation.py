@@ -1,22 +1,23 @@
 # Adapted from https://github.com/spcl/QuaRot/blob/main/fake_quant/rotation_utils.py
-import torch
 import typing
+
+import torch
 import tqdm
+
 from QQQ.utils import (
-    get_model_architecture,
-    get_transformer_layers,
-    get_pre_head_layernorm,
-    get_lm_head,
-    get_embeddings,
     free_memory,
+    get_embeddings,
+    get_lm_head,
+    get_model_architecture,
+    get_pre_head_layernorm,
+    get_transformer_layers,
     str2torch_device,
 )
-from .hadamard_utils import random_hadamard_matrix, apply_exact_had_to_linear
+
+from .hadamard_utils import apply_exact_had_to_linear, random_hadamard_matrix
 
 
-def fuse_ln_linear(
-    layernorm: torch.nn.Module, linear_layers: typing.Iterable[torch.nn.Linear]
-) -> None:
+def fuse_ln_linear(layernorm: torch.nn.Module, linear_layers: typing.Iterable[torch.nn.Linear]) -> None:
     """
     fuse the linear operations in Layernorm into the adjacent linear blocks.
     """
@@ -29,12 +30,8 @@ def fuse_ln_linear(
 
         if hasattr(layernorm, "bias"):
             if linear.bias is None:
-                linear.bias = torch.nn.Parameter(
-                    torch.zeros(linear.out_features, dtype=torch.float64)
-                )
-            linear.bias.data = linear.bias.data.double() + torch.matmul(
-                W_, layernorm.bias.double()
-            )
+                linear.bias = torch.nn.Parameter(torch.zeros(linear.out_features, dtype=torch.float64))
+            linear.bias.data = linear.bias.data.double() + torch.matmul(W_, layernorm.bias.double())
             linear.bias.data = linear.bias.data.to(linear_dtype)
 
 
@@ -52,9 +49,7 @@ def fuse_layer_norms(model):
     for layer in layers:
         # fuse the input layernorms into the linear layers
         if model_type in ["llama", "qwen2"]:
-            fuse_ln_linear(
-                layer.post_attention_layernorm, [layer.mlp.up_proj, layer.mlp.gate_proj]
-            )
+            fuse_ln_linear(layer.post_attention_layernorm, [layer.mlp.up_proj, layer.mlp.gate_proj])
             fuse_ln_linear(
                 layer.input_layernorm,
                 [
@@ -144,7 +139,8 @@ def rotate_mlp_output(layer, Q, model_type, device):
     dtype = W.weight.data.dtype
     W_ = W.weight.data.to(device=device, dtype=torch.float64)
     W.weight.data = torch.matmul(Q.T, W_).to(device="cpu", dtype=dtype)
-    # apply_exact_had_to_linear(W, had_dim=-1, output=False) #apply exact (inverse) hadamard on the weights of mlp output
+    # apply_exact_had_to_linear(W, had_dim=-1, output=False)
+    # apply exact (inverse) hadamard on the weights of mlp output
     if W.bias is not None:
         b = W.bias.data.to(device=device, dtype=torch.float64)
         W.bias.data = torch.matmul(Q.T, b).to(device="cpu", dtype=dtype)
@@ -169,13 +165,7 @@ def rotate_ov_proj(layer, model_type, head_num, head_dim):
 @torch.inference_mode()
 def rotate_model(model, rotation_config, args, Q=None):
     device = str2torch_device(args.device)
-    Q = (
-        get_orthogonal_matrix(
-            model.config.hidden_size, rotation_config.rotate_mode, device
-        )
-        if Q is None
-        else Q
-    )
+    Q = get_orthogonal_matrix(model.config.hidden_size, rotation_config.rotate_mode, device) if Q is None else Q
     config = model.config
     num_heads = config.num_attention_heads
     model_dim = config.hidden_size

@@ -1,12 +1,15 @@
+import logging
+
 import torch
 import torch.nn as nn
-import logging
+
+import QQQ.smooth.models.qwen2 as qwen2
+
 from ..quantization.observer import MinMaxObserver
 from ..quantization.quant_utils import (
     fake_quantize_per_channel_affine,
     fake_quantize_per_tensor_affine,
 )
-import QQQ.smooth.models.qwen2 as qwen2
 
 logger = logging.getLogger("QQQ")
 scale_list = []
@@ -26,18 +29,14 @@ def set_search_class(smooth_method):
 def migration(act, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict=None):
     if search_class is None:
         raise ValueError("search_class need to be set before migration!")
-    migrator = search_class(
-        act, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict
-    )
+    migrator = search_class(act, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict)
     best_scale = migrator()
     scale_list.append(best_scale)
     return best_scale
 
 
 class MigratorBase(nn.Module):
-    def __init__(
-        self, input, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict=None
-    ):
+    def __init__(self, input, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict=None):
         super().__init__()
         self.input = input
         self.weight = weight
@@ -51,36 +50,22 @@ class MigratorBase(nn.Module):
         # calculate min max in advance
         self.cmx = self.input.max(0)[0].max(0)[0]
         self.cmn = self.input.min(0)[0].min(0)[0]
-        self.amx = max(
-            self.input.max(), torch.tensor(0.0, dtype=self.dtype).to(self.device)
-        )
-        self.amn = min(
-            self.input.min(), torch.tensor(0.0, dtype=self.dtype).to(self.device)
-        )
-        logger.info("the module type is {}".format(self.module_type))
-        logger.info(
-            "the data type is {}, the device is {}".format(self.dtype, self.device)
-        )
-        logger.info("the activation range is {:.2f}, {:.2f}".format(self.amn, self.amx))
-        logger.info(
-            "the weight range is {:.2f}, {:.2f}".format(
-                self.weight.min(), self.weight.max()
-            )
-        )
+        self.amx = max(self.input.max(), torch.tensor(0.0, dtype=self.dtype).to(self.device))
+        self.amn = min(self.input.min(), torch.tensor(0.0, dtype=self.dtype).to(self.device))
+        logger.info(f"the module type is {self.module_type}")
+        logger.info(f"the data type is {self.dtype}, the device is {self.device}")
+        logger.info(f"the activation range is {self.amn:.2f}, {self.amx:.2f}")
+        logger.info(f"the weight range is {self.weight.min():.2f}, {self.weight.max():.2f}")
         # calculate output
         self.output = self.get_output(self.input, self.weight, self.bias)
         # prepare MinMax Observer for later Quantize
         self.aob = (
-            MinMaxObserver(
-                self.a_qconfig.bit, self.a_qconfig.symmetric, self.a_qconfig.ch_axis
-            )
+            MinMaxObserver(self.a_qconfig.bit, self.a_qconfig.symmetric, self.a_qconfig.ch_axis)
             .to(self.device)
             .to(self.dtype)
         )
         self.wob = (
-            MinMaxObserver(
-                self.w_qconfig.bit, self.w_qconfig.symmetric, self.w_qconfig.ch_axis
-            )
+            MinMaxObserver(self.w_qconfig.bit, self.w_qconfig.symmetric, self.w_qconfig.ch_axis)
             .to(self.device)
             .to(self.dtype)
         )
@@ -115,9 +100,7 @@ class MigratorBase(nn.Module):
             min_val_cur, max_val_cur = observer(X)
         scale, zp = observer.calculate_qparams(min_val_cur, max_val_cur)
         if observer.ch_axis == -1:
-            X_q = fake_quantize_per_tensor_affine(
-                X, scale.item(), zp.item(), observer.quant_min, observer.quant_max
-            )
+            X_q = fake_quantize_per_tensor_affine(X, scale.item(), zp.item(), observer.quant_min, observer.quant_max)
         else:
             X_q = fake_quantize_per_channel_affine(
                 X, scale, zp, observer.ch_axis, observer.quant_min, observer.quant_max
@@ -147,17 +130,12 @@ class MigratorBase(nn.Module):
     def get_best_scale(self, min_range, max_range):
         best_scale = self.cac_scale(min_range, max_range)
         logger.info(
-            "the best scale is {:.2f}, best min range is {:.2f}, \
-            best max range is {:.2f}".format(
-                best_scale.max(),
-                (self.input / best_scale).min(),
-                (self.input / best_scale).max(),
-            )
+            f"the best scale is {best_scale.max():.2f}, best min range is {(self.input / best_scale).min():.2f}, \
+            best max range is {(self.input / best_scale).max():.2f}"
         )
         logger.info(
-            "the range of weight becomes {:.2f}, {:.2f}".format(
-                (self.weight * best_scale).min(), (self.weight * best_scale).max()
-            )
+            f"the range of weight becomes"
+            f" {(self.weight * best_scale).min():.2f}, {(self.weight * best_scale).max():.2f}"
         )
         return best_scale
         # return best_scale
@@ -183,22 +161,10 @@ class MigratorBase(nn.Module):
         qkv = qkv + bias
         sz_q = self.extra_dict["num_heads"] * head_dim
         sz_kv = self.extra_dict["num_key_value_heads"] * head_dim
-        q = (
-            qkv[:, :, :sz_q]
-            .view(B, N, self.extra_dict["num_heads"], head_dim)
-            .transpose(1, 2)
-        )
-        k = (
-            qkv[:, :, sz_q : sz_q + sz_kv]
-            .view(B, N, self.extra_dict["num_key_value_heads"], head_dim)
-            .transpose(1, 2)
-        )
-        v = (
-            qkv[:, :, sz_q + sz_kv :]
-            .view(B, N, self.extra_dict["num_key_value_heads"], head_dim)
-            .transpose(1, 2)
-        )
-        cos, sin = self.extra_dict['position_embeddings']
+        q = qkv[:, :, :sz_q].view(B, N, self.extra_dict["num_heads"], head_dim).transpose(1, 2)
+        k = qkv[:, :, sz_q : sz_q + sz_kv].view(B, N, self.extra_dict["num_key_value_heads"], head_dim).transpose(1, 2)
+        v = qkv[:, :, sz_q + sz_kv :].view(B, N, self.extra_dict["num_key_value_heads"], head_dim).transpose(1, 2)
+        cos, sin = self.extra_dict["position_embeddings"]
         q, k = qwen2.apply_rotary_pos_emb(q, k, cos, sin)
         k = qwen2.repeat_kv(k, self.extra_dict["num_key_value_groups"])
         v = qwen2.repeat_kv(v, self.extra_dict["num_key_value_groups"])
@@ -213,7 +179,9 @@ class MigratorBase(nn.Module):
             v,
             attn_mask=self.extra_dict["attention_mask"],
             dropout_p=0.0,
-            # The q_len > 1 is necessary to match with AttentionMaskConverter.to_causal_4d that does not create a causal mask in case q_len == 1.
+            # The q_len > 1 is necessary to match with
+            # AttentionMaskConverter.to_causal_4d that does not create
+            # a causal mask in case q_len == 1.
             is_causal=self.extra_dict["attention_mask"] is None and N > 1,
         )
         output = output.transpose(1, 2).contiguous().view(B, N, C)
@@ -226,9 +194,7 @@ class MigratorBase(nn.Module):
     def up_function(self, input, weight):
         B, N, _ = input.shape
         C, _ = weight.shape
-        output = (
-            torch.matmul(input, weight.T).reshape(B, N, 2, C // 2).permute(2, 0, 1, 3)
-        )
+        output = torch.matmul(input, weight.T).reshape(B, N, 2, C // 2).permute(2, 0, 1, 3)
         gate, up = output[0], output[1]
         output = self.extra_dict["act_fn"](gate) * up
         return output[self.extra_dict["observation_mask"] == 1].to(torch.float32)
@@ -244,12 +210,8 @@ class MigratorBase(nn.Module):
 
 
 class Migrator1DRangeSearch(MigratorBase):
-    def __init__(
-        self, input, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict=None
-    ):
-        super().__init__(
-            input, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict
-        )
+    def __init__(self, input, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict=None):
+        super().__init__(input, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict)
         self.num = max(100, int(self.amx / 0.5))
 
     def cac_scale_loss(self, mn_range, mx_range):
@@ -276,7 +238,7 @@ class Migrator1DRangeSearch(MigratorBase):
                 mx_range = st
             cnt += 1
             if cnt % 10 == 0:
-                logger.info("{:.2f} loss at iter {}".format(loss, cnt))
+                logger.info(f"{loss:.2f} loss at iter {cnt}")
             st -= step
         return (
             torch.tensor(mn_range, dtype=self.dtype).to(self.device),
@@ -291,12 +253,8 @@ class Migrator1DRangeSearch(MigratorBase):
 
 
 class Migrator1DRangeSearchAWQ(MigratorBase):
-    def __init__(
-        self, input, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict=None
-    ):
-        super().__init__(
-            input, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict
-        )
+    def __init__(self, input, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict=None):
+        super().__init__(input, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict)
         self.num = max(100, int(self.amx / 0.5))
         self.x_max = self.get_act_scale(self.input)
 
@@ -316,15 +274,11 @@ class Migrator1DRangeSearchAWQ(MigratorBase):
 
     def get_best_scale(self, scales):
         logger.info(
-            "the best scale is {:.2f}, best min range is {:.2f}, \
-            best max range is {:.2f}".format(
-                scales.max(), (self.input / scales).min(), (self.input / scales).max()
-            )
+            f"the best scale is {scales.max():.2f}, best min range is {(self.input / scales).min():.2f}, \
+            best max range is {(self.input / scales).max():.2f}"
         )
         logger.info(
-            "the range of weight becomes {:.2f}, {:.2f}".format(
-                (self.weight * scales).min(), (self.weight * scales).max()
-            )
+            f"the range of weight becomes {(self.weight * scales).min():.2f}, {(self.weight * scales).max():.2f}"
         )
         return scales
 
@@ -350,7 +304,7 @@ class Migrator1DRangeSearchAWQ(MigratorBase):
                 best_ratio = ratio
                 best_scales = scales
             # if cnt % 10 == 0:
-            logger.info("{:.2f} loss at iter {}".format(loss, cnt))
+            logger.info(f"{loss:.2f} loss at iter {cnt}")
         if best_ratio == -1:
             print(history)
             raise Exception
@@ -376,22 +330,16 @@ class Migrator1DRangeSearchSQ(MigratorBase):
         extra_dict=None,
         smooth_alpha=0.5,
     ):
-        super().__init__(
-            input, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict
-        )
+        super().__init__(input, weight, bias, a_qconfig, w_qconfig, module_type, extra_dict)
         self.smooth_alpha = smooth_alpha
 
     def get_best_scale(self, scales):
         logger.info(
-            "the best scale is {:.2f}, best min range is {:.2f}, \
-            best max range is {:.2f}".format(
-                scales.max(), (self.input / scales).min(), (self.input / scales).max()
-            )
+            f"the best scale is {scales.max():.2f}, best min range is {(self.input / scales).min():.2f}, \
+            best max range is {(self.input / scales).max():.2f}"
         )
         logger.info(
-            "the range of weight becomes {:.2f}, {:.2f}".format(
-                (self.weight * scales).min(), (self.weight * scales).max()
-            )
+            f"the range of weight becomes {(self.weight * scales).min():.2f}, {(self.weight * scales).max():.2f}"
         )
         return scales
 
@@ -401,10 +349,7 @@ class Migrator1DRangeSearchSQ(MigratorBase):
         act_scales = torch.max(self.cmx.abs(), self.cmn.abs())
         weight_scales = self.weight.abs().max(dim=0)[0].clamp(min=1e-5).to(self.device)
         best_scales = (
-            (
-                act_scales.pow(self.smooth_alpha)
-                / weight_scales.pow(1 - self.smooth_alpha)
-            )
+            (act_scales.pow(self.smooth_alpha) / weight_scales.pow(1 - self.smooth_alpha))
             .clamp(min=1e-5)
             .to(self.dtype)
         )

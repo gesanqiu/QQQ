@@ -1,8 +1,10 @@
-from transformers import AutoTokenizer
-from datasets import load_dataset
-import torch
-import random
 import json
+import random
+
+import torch
+from transformers import AutoTokenizer
+
+from datasets import load_dataset
 
 
 def get_pile(nsamples, seed, seqlen, tokenizer_path):
@@ -175,9 +177,7 @@ def get_c4_new(nsamples, seed, seqlen, tokenizer_path):
 
 
 def get_custom_data(nsamples, seed, seqlen, tokenizer_path, data_path):
-    raise NotImplementedError(
-        "You should implentment the function to load your own dataset!"
-    )
+    raise NotImplementedError("You should implentment the function to load your own dataset!")
 
 
 def get_loaders(
@@ -203,9 +203,7 @@ def get_loaders(
             return get_c4_new(nsamples, seed, seqlen, tokenizer_path)
         return get_c4(nsamples, seed, seqlen, tokenizer_path)
     if "mix" in name:
-        wiki_train, wiki_val = get_wikitext2(
-            nsamples // 3, seed, seqlen, tokenizer_path
-        )
+        wiki_train, wiki_val = get_wikitext2(nsamples // 3, seed, seqlen, tokenizer_path)
         ptb_train, ptb_val = get_ptb(nsamples // 3, seed, seqlen, tokenizer_path)
         c4_train, c4_val = get_c4(nsamples // 3, seed, seqlen, tokenizer_path)
         train = wiki_train + ptb_train + c4_train

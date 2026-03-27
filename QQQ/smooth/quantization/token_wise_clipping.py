@@ -1,6 +1,7 @@
-from torch.nn import MSELoss
 import logging
+
 from smooth.quantization.fake_quant import QuantizeBase
+from torch.nn import MSELoss
 
 logger = logging.getLogger("QQQ")
 
@@ -46,12 +47,12 @@ def find_ratio(model, fp_input, fp_output, param):
         calibrate(model, fp_input)
         enable_quantization(model)
         cur_loss = calibrate(model, fp_input, True)
-        logger.info("the ratio is {}, the loss is {}".format(1.0 - step * i, cur_loss))
+        logger.info(f"the ratio is {1.0 - step * i}, the loss is {cur_loss}")
         if loss is None or loss > cur_loss:
             loss = cur_loss
             p = i
     ratio = 1.0 - step * p
-    logger.info("the best percentile is {}".format(ratio))
+    logger.info(f"the best percentile is {ratio}")
     set_ratio(model, ratio)
     calibrate(model, fp_input)
 
@@ -69,7 +70,7 @@ def cac_step_iters(a_bit, bs):
     step = 0.005
     step = float(format(step, ".2g"))
     iters = int(a_bit_iters[a_bit] / step)
-    print("the step is {}, the iter is {}".format(step, iters))
+    print(f"the step is {step}, the iter is {iters}")
     return step, iters
 
 
@@ -82,9 +83,7 @@ def token_wise_clipping(model, fp_input, fp_output, config_quant, batch_size):
     if hasattr(config_quant.a_qconfig, "token_quantile"):
         set_ratio(model, config_quant.a_qconfig.token_quantile)
         calibrate(model, fp_input)
-        logger.info(
-            "the best percentile is {}".format(config_quant.a_qconfig.token_quantile)
-        )
+        logger.info(f"the best percentile is {config_quant.a_qconfig.token_quantile}")
     else:
         step, iters = cac_step_iters(config_quant.a_qconfig.bit, batch_size)
         find_ratio(

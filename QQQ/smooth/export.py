@@ -1,7 +1,9 @@
-import torch
 import argparse
+
+import torch
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
+
 from QQQ.utils import build_model_and_tokenizer, get_model_architecture
 
 
@@ -118,9 +120,7 @@ if __name__ == "__main__":
     args = parse_args()
     if args.tokenizer_path is None:
         args.tokenizer_path = args.model_path
-    model, tokenizer = build_model_and_tokenizer(
-        args.model_path, args.tokenizer_path, args.dtype, args.device
-    )
+    model, tokenizer = build_model_and_tokenizer(args.model_path, args.tokenizer_path, args.dtype, args.device)
     scale_list = torch.load(args.scale_list)
     model = export_smoothed_model(model, scale_list)
     model.save_pretrained(args.output_path)

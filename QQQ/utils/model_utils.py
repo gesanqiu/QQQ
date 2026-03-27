@@ -1,20 +1,22 @@
-import torch
-import torch.nn as nn
 import functools
 from typing import Optional
+
+import torch
+import torch.nn as nn
 import transformers
-from transformers import (
-    AutoConfig,
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    PretrainedConfig,
-)
-from .utils import str2torch_dtype, str2torch_device
 from accelerate.big_modeling import (
     dispatch_model,
-    infer_auto_device_map,
     get_balanced_memory,
+    infer_auto_device_map,
 )
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    PretrainedConfig,
+)
+
+from .utils import str2torch_device, str2torch_dtype
 
 _MODEL_TYPE = {
     "LlamaForCausalLM": "llama",
@@ -23,23 +25,17 @@ _MODEL_TYPE = {
 }
 
 
-def build_model_and_tokenizer(
-    model_path, tokenizer_path, dtype: str, trust_remote_code: bool = True
-):
+def build_model_and_tokenizer(model_path, tokenizer_path, dtype: str, trust_remote_code: bool = True):
     model_path = model_path.rstrip("/")
     tokenizer_path = tokenizer_path.rstrip("/")
-    tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_path, trust_remote_code=trust_remote_code
-    )
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=trust_remote_code)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
     kwargs = {
         "dtype": str2torch_dtype(dtype),
         "device_map": "auto",
     }
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path, trust_remote_code=trust_remote_code, **kwargs
-    )
+    model = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=trust_remote_code, **kwargs)
     return model, tokenizer
 
 
@@ -83,15 +79,8 @@ def find_layers(module, layers=[nn.Conv2d, nn.Linear], name=""):
         return {name: module}
     res = {}
     for name1, child in module.named_children():
-        res.update(
-            find_layers(
-                child, layers=layers, name=name + "." + name1 if name != "" else name1
-            )
-        )
+        res.update(find_layers(child, layers=layers, name=name + "." + name1 if name != "" else name1))
     return res
-
-
-import functools
 
 
 def recurse_getattr(obj, attr: str):
@@ -120,18 +109,11 @@ def recurse_setattr(module, name, value):
         recurse_setattr(getattr(module, name), rest, value)
 
 
-def get_model_config(
-    model_path: str, trust_remote_code: bool = True, revision: Optional[str] = None
-) -> PretrainedConfig:
+def get_model_config(model_path: str, trust_remote_code: bool = True, revision: str | None = None) -> PretrainedConfig:
     try:
-        config = AutoConfig.from_pretrained(
-            model_path, trust_remote_code=trust_remote_code, revision=revision
-        )
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code, revision=revision)
     except ValueError as e:
-        if (
-            not trust_remote_code
-            and "requires you to execute the configuration file" in str(e)
-        ):
+        if not trust_remote_code and "requires you to execute the configuration file" in str(e):
             err_msg = (
                 "Failed to load the model config. If the model is a custom "
                 "model not yet available in the HuggingFace transformers "
@@ -172,6 +154,7 @@ def get_embeddings(model, model_type) -> list[torch.nn.Module]:
         return [model.model.embed_tokens]
     else:
         raise ValueError(f"Unknown model type {model_type}")
+
 
 def remove_empty_parameters(model):
     state_dict = {}

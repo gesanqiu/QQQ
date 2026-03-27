@@ -15,7 +15,7 @@ def quantize(x, scale, zero, maxq, sym, groupsize):
 
 class Quantizer(nn.Module):
     def __init__(self, shape=1):
-        super(Quantizer, self).__init__()
+        super().__init__()
         self.register_buffer("maxq", torch.tensor(0))
         self.register_buffer("scale", torch.zeros(shape))
         self.register_buffer("zero", torch.zeros(shape))
@@ -98,11 +98,7 @@ class Quantizer(nn.Module):
                 p = 1 - i / self.grid
                 xmin1 = p * xmin
                 xmax1 = p * xmax
-                scale1 = (
-                    (xmax1 - xmin1) / self.maxq
-                    if (self.groupsize != -1 or not self.sym)
-                    else xmax1 / self.maxq
-                )
+                scale1 = (xmax1 - xmin1) / self.maxq if (self.groupsize != -1 or not self.sym) else xmax1 / self.maxq
                 zero1 = torch.round(-xmin1 / scale1) if not self.sym else self.zero
                 q = quantize(
                     x,
@@ -146,9 +142,7 @@ class Quantizer(nn.Module):
 
     def quantize(self, x):
         if self.ready():
-            return quantize(
-                x, self.scale, self.zero, self.maxq, self.sym, self.groupsize
-            )
+            return quantize(x, self.scale, self.zero, self.maxq, self.sym, self.groupsize)
         return x
 
     def enabled(self):

@@ -1,6 +1,5 @@
-from .quantized_module import Quantizer
-from .quantized_module import QuantizedModule, QuantizedLayer
+from .quantized_module import QuantizedLayer, QuantizedModule, Quantizer
 from .state import (
-    enable_calibration_quantization,
     disable_all,
+    enable_calibration_quantization,
 )

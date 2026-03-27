@@ -1,42 +1,43 @@
-from torch import nn
-import torch.nn.functional as F
-import copy  # noqa: F401
-import torch  # noqa: F401
+import copy
 import gc
-from .observer import (
-    AvgTokenQuantileObserver,
-    MinMaxObserver,
-    EMAMinMaxObserver,
-    AvgMinMaxObserver,
-    MSEObserver,
-    AvgMSEObserver,
-    MSEFastObserver,
-    AvgMSEFastObserver,
-    EMAMSEFastObserver,
-    EMAQuantileObserver,
-    AvgQuantileObserver,
-    LSQPlusObserver,
-    QuantileObserver,
-)
+
+import torch
+import torch.nn.functional as F
+from torch import nn
+
 from .fake_quant import (
     FixedFakeQuantize,
-    GroupFixedFakeQuantize,
-    TokenFixedFakeQuantize,
     FixedQuantize,
+    GroupFixedFakeQuantize,
     GroupFixedQuantize,
+    TokenFixedFakeQuantize,
     TokenGroupFixedFakeQuantize,
 )
-
+from .observer import (
+    AvgMinMaxObserver,
+    AvgMSEFastObserver,
+    AvgMSEObserver,
+    AvgQuantileObserver,
+    AvgTokenQuantileObserver,
+    EMAMinMaxObserver,
+    EMAMSEFastObserver,
+    EMAQuantileObserver,
+    LSQPlusObserver,
+    MinMaxObserver,
+    MSEFastObserver,
+    MSEObserver,
+    QuantileObserver,
+)
 
 ObserverDict = {
-    "MinMaxObserver": MinMaxObserver,  # noqa: E241
-    "EMAMinMaxObserver": EMAMinMaxObserver,  # More general choice.   # noqa: E241
+    "MinMaxObserver": MinMaxObserver,
+    "EMAMinMaxObserver": EMAMinMaxObserver,  # More general choice.
     "AvgMinMaxObserver": AvgMinMaxObserver,
-    "MSEObserver": MSEObserver,  # noqa: E241
+    "MSEObserver": MSEObserver,
     "AvgMSEObserver": AvgMSEObserver,
     "MSEFastObserver": MSEFastObserver,
     "AvgMSEFastObserver": AvgMSEFastObserver,
-    "EMAMSEFastObserver": EMAMSEFastObserver,  # noqa: E241
+    "EMAMSEFastObserver": EMAMSEFastObserver,
     "AvgQuantileObserver": AvgQuantileObserver,
     "EMAQuantileObserver": EMAQuantileObserver,
     "LSQPlusObserver": LSQPlusObserver,
@@ -45,7 +46,7 @@ ObserverDict = {
 }
 
 FakeQuantizeDict = {
-    "FixedFakeQuantize": FixedFakeQuantize,  # Unlearnable scale/zeropoint  # noqa: E241                       # noqa: E241
+    "FixedFakeQuantize": FixedFakeQuantize,  # Unlearnable scale/zeropoint
     "GroupFixedFakeQuantize": GroupFixedFakeQuantize,
     "TokenFixedFakeQuantize": TokenFixedFakeQuantize,
     "FixedQuantize": FixedQuantize,

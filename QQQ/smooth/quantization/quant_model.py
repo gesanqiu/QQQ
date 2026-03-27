@@ -1,4 +1,4 @@
-from QQQ.smooth.models import QuantizedQwen2ForCausalLM, QuantizedLlamaForCausalLM
+from QQQ.smooth.models import QuantizedLlamaForCausalLM, QuantizedQwen2ForCausalLM
 from QQQ.smooth.quantization.observer import ObserverBase
 from QQQ.utils import prepare_for_inference
 

@@ -1,12 +1,14 @@
 import argparse
+
 import torch
 from transformers import AutoTokenizer
+
+from QQQ.gptq.models import get_quantized_model_class
 from QQQ.utils import (
     get_model_architecture,
     get_model_config,
     setup_seed,
 )
-from QQQ.gptq.models import get_quantized_model_class
 
 
 def parse_args():

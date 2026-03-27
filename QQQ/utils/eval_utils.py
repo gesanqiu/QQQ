@@ -1,6 +1,5 @@
-import logging
 import fnmatch
-
+import logging
 
 logger = logging.getLogger("QQQ")
 

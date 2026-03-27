@@ -1,15 +1,17 @@
-import torch
 import logging
 import os
 import time
+
+import torch
 from torch.nn.utils.rnn import pad_sequence
+
+from QQQ.utils import get_loaders, get_model_architecture, str2torch_device
 
 from .quantization.quantized_module import QuantizedModule
 from .quantization.state import (
-    enable_calibration_quantization,
     disable_all,
+    enable_calibration_quantization,
 )
-from QQQ.utils import get_model_architecture, get_loaders, str2torch_device
 
 logger = logging.getLogger("QQQ")
 
@@ -25,16 +27,11 @@ def create_batches(tokenizer, dataloader, batch_size, device):
     logger.info("**prepare fp input and output**")
     fp_input, fp_output = [], []
     input_ids_list = [inp[0].squeeze(0) for inp in dataloader]
-    batches = [
-        input_ids_list[i : i + batch_size]
-        for i in range(0, len(input_ids_list), batch_size)
-    ]
+    batches = [input_ids_list[i : i + batch_size] for i in range(0, len(input_ids_list), batch_size)]
 
     for batch in batches:
         tmp = {}
-        padded_input_ids = pad_sequence(
-            batch, batch_first=True, padding_value=tokenizer.pad_token_id
-        )
+        padded_input_ids = pad_sequence(batch, batch_first=True, padding_value=tokenizer.pad_token_id)
         attention_mask = (padded_input_ids != tokenizer.pad_token_id).long()
         tmp["input_ids"] = padded_input_ids.to(device)
         tmp["attention_mask"] = attention_mask.to(device)
@@ -45,7 +42,7 @@ def create_batches(tokenizer, dataloader, batch_size, device):
 
 @torch.no_grad()
 def smooth(model, tokenizer, smooth_config, args):
-    logger.info("the quantization config is {}".format(smooth_config))
+    logger.info(f"the quantization config is {smooth_config}")
     logger.info("begin building calibration data!")
     dataloader, _ = get_loaders(
         args.dataset,
@@ -56,9 +53,7 @@ def smooth(model, tokenizer, smooth_config, args):
         custom_data_path=args.custom_dataset,
     )
     device = str2torch_device(args.device)
-    fp_input, fp_output = create_batches(
-        tokenizer, dataloader, smooth_config.batch_size, device
-    )
+    fp_input, fp_output = create_batches(tokenizer, dataloader, smooth_config.batch_size, device)
 
     logger.info("begin smooth!")
     st = time.time()
@@ -94,5 +89,5 @@ def smooth(model, tokenizer, smooth_config, args):
         token_wise_clipping(model, fp_input, fp_output, smooth_config, args.batch_size)
 
     ed = time.time()
-    logger.info("cost {:.4f} time".format(ed - st))
+    logger.info(f"cost {ed - st:.4f} time")
     return migration.scale_list

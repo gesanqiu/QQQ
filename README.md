@@ -21,7 +21,7 @@ Our extensive experiments show that QQQ achieves performance on par with existin
 ### Prerequisites
 - Your GPU(s) must be of Compute Capability 8.0 or higher. Amphere and later architectures are supported.
 - Your CUDA version must be CUDA 11.4 or later.
-- Python 3.9+
+- Python 3.10+
 ### Build from source
 Currently this repo only support build form source.
 

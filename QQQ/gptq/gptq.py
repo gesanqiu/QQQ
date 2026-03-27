@@ -7,7 +7,6 @@ import transformers
 
 from .quant import *
 
-
 DEBUG = False
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -35,9 +34,7 @@ class GPTQ:
         if len(inp.shape) == 2:
             inp = inp.unsqueeze(0)
         tmp = inp.shape[0]
-        if isinstance(self.layer, nn.Linear) or isinstance(
-            self.layer, transformers.Conv1D
-        ):
+        if isinstance(self.layer, nn.Linear) or isinstance(self.layer, transformers.Conv1D):
             if len(inp.shape) == 3:
                 inp = inp.reshape((-1, inp.shape[-1]))
             inp = inp.t()
@@ -133,9 +130,7 @@ class GPTQ:
                 if groupsize != -1:
                     if not static_groups:
                         if (i1 + i) % groupsize == 0:
-                            self.quantizer.find_params(
-                                W[:, (i1 + i) : (i1 + i + groupsize)], weight=True
-                            )
+                            self.quantizer.find_params(W[:, (i1 + i) : (i1 + i + groupsize)], weight=True)
 
                         if ((i1 + i) // groupsize) - now_idx == -1:
                             scale.append(self.quantizer.scale)
@@ -189,9 +184,7 @@ class GPTQ:
 
         if isinstance(self.layer, transformers.Conv1D):
             Q = Q.t()
-        self.layer.weight.data = Q.reshape(self.layer.weight.shape).to(
-            self.layer.weight.data.dtype
-        )
+        self.layer.weight.data = Q.reshape(self.layer.weight.shape).to(self.layer.weight.data.dtype)
         if DEBUG:
             print(torch.sum((self.layer(self.inp1) - self.out1) ** 2))
 

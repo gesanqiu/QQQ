@@ -1,14 +1,14 @@
+import argparse
 import fnmatch
-import yaml
+import gc
+import json
 import os
+import random
+
 import numpy as np
 import torch
+import yaml
 from easydict import EasyDict
-import random
-import json
-import gc
-import argparse
-
 
 DTYPE_MAP = {
     "float16": torch.float16,
@@ -21,7 +21,7 @@ def str2torch_dtype(dtype):
     if dtype in DTYPE_MAP:
         torch_dtype = DTYPE_MAP[dtype]
     else:
-        raise ValueError("Not supported dtype: {}!".format(dtype))
+        raise ValueError(f"Not supported dtype: {dtype}!")
     return torch_dtype
 
 
@@ -31,9 +31,7 @@ def str2torch_device(device):
             device = int(device)
         device = torch.device(device)
     else:
-        device = (
-            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        )
+        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     return device
 
 

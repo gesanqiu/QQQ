@@ -1,13 +1,14 @@
 import torch
 import torch.nn as nn
+
 from .observer import MinMaxObserver
 from .quant_utils import (
+    dequantize_per_channel_affine,
+    dequantize_per_tensor_affine,
     fake_quantize_per_channel_affine,
     fake_quantize_per_tensor_affine,
     quantize_per_channel_affine,
-    dequantize_per_channel_affine,
     quantize_per_tensor_affine,
-    dequantize_per_tensor_affine,
 )
 
 
@@ -43,16 +44,9 @@ class QuantizeBase(nn.Module):
 
     def extra_repr(self):
         return (
-            "fake_quant_enabled={}, observer_enabled={}, "
-            "symmetric={}, bit={}, ch_axis={}, quant_min={}, quant_max={}".format(
-                self.fake_quant_enabled,
-                self.observer_enabled,
-                self.symmetric,
-                self.bit,
-                self.ch_axis,
-                self.quant_min,
-                self.quant_max,
-            )
+            f"fake_quant_enabled={self.fake_quant_enabled}, observer_enabled={self.observer_enabled}, "
+            f"symmetric={self.symmetric}, bit={self.bit}, ch_axis={self.ch_axis},"
+            f" quant_min={self.quant_min}, quant_max={self.quant_max}"
         )
 
 
@@ -64,15 +58,9 @@ class FixedFakeQuantize(QuantizeBase):
 
     def forward(self, X, observation_mask=None, seq_pos=-1):
         if self.observer_enabled == 1:
-            self.observer(
-                X.detach(), observation_mask=observation_mask, seq_pos=seq_pos
-            )
-            _scale, _zero_point = self.observer.calculate_qparams(
-                self.observer.min_val, self.observer.max_val
-            )
-            _scale, _zero_point = _scale.to(self.scale.device), _zero_point.to(
-                self.zero_point.device
-            )
+            self.observer(X.detach(), observation_mask=observation_mask, seq_pos=seq_pos)
+            _scale, _zero_point = self.observer.calculate_qparams(self.observer.min_val, self.observer.max_val)
+            _scale, _zero_point = _scale.to(self.scale.device), _zero_point.to(self.zero_point.device)
             if self.scale.shape != _scale.shape:
                 self.scale.resize_(_scale.shape)
                 self.zero_point.resize_(_zero_point.shape)
@@ -116,9 +104,7 @@ class GroupFixedFakeQuantize(QuantizeBase):
         X = X.reshape(-1, self.group_size)
         if self.observer_enabled == 1 or self.fake_quant_enabled == 1:
             self.observer(X.detach())
-            scale, zero_point = self.observer.calculate_qparams(
-                self.observer.min_val, self.observer.max_val
-            )
+            scale, zero_point = self.observer.calculate_qparams(self.observer.min_val, self.observer.max_val)
 
         if self.fake_quant_enabled == 1:
             X = fake_quantize_per_channel_affine(
@@ -149,9 +135,7 @@ class TokenGroupFixedFakeQuantize(QuantizeBase):
         X = X.t().reshape(org_shape[-1] // self.group_size, -1)
         if self.observer_enabled == 1 or self.fake_quant_enabled == 1:
             self.observer(X.detach())
-            scale, zero_point = self.observer.calculate_qparams(
-                self.observer.min_val, self.observer.max_val
-            )
+            scale, zero_point = self.observer.calculate_qparams(self.observer.min_val, self.observer.max_val)
 
         if self.fake_quant_enabled == 1:
             X = fake_quantize_per_channel_affine(
@@ -179,9 +163,7 @@ class TokenFixedFakeQuantize(QuantizeBase):
         X = X.reshape(-1, org_shape[-1])
         if self.observer_enabled == 1 or self.fake_quant_enabled == 1:
             self.observer(X.detach())
-            scale, zero_point = self.observer.calculate_qparams(
-                self.observer.min_val, self.observer.max_val
-            )
+            scale, zero_point = self.observer.calculate_qparams(self.observer.min_val, self.observer.max_val)
 
         if self.fake_quant_enabled == 1:
             X = fake_quantize_per_channel_affine(
@@ -207,12 +189,8 @@ class FixedQuantize(QuantizeBase):
         X_clone = X.detach().clone()
         if self.observer_enabled == 1 and not self.is_quantized:
             self.observer(X_clone)
-            _scale, _zero_point = self.observer.calculate_qparams(
-                self.observer.min_val, self.observer.max_val
-            )
-            _scale, _zero_point = _scale.to(self.scale.device), _zero_point.to(
-                self.zero_point.device
-            )
+            _scale, _zero_point = self.observer.calculate_qparams(self.observer.min_val, self.observer.max_val)
+            _scale, _zero_point = _scale.to(self.scale.device), _zero_point.to(self.zero_point.device)
             if self.scale.shape != _scale.shape:
                 self.scale.resize_(_scale.shape)
                 self.zero_point.resize_(_zero_point.shape)
@@ -280,12 +258,8 @@ class GroupFixedQuantize(QuantizeBase):
         if self.observer_enabled == 1 and not self.is_quantized:
             X_clone = X_clone.reshape(-1, self.group_size)
             self.observer(X_clone)
-            _scale, _zero_point = self.observer.calculate_qparams(
-                self.observer.min_val, self.observer.max_val
-            )
-            _scale, _zero_point = _scale.to(self.scale.device), _zero_point.to(
-                self.zero_point.device
-            )
+            _scale, _zero_point = self.observer.calculate_qparams(self.observer.min_val, self.observer.max_val)
+            _scale, _zero_point = _scale.to(self.scale.device), _zero_point.to(self.zero_point.device)
             if self.scale.shape != _scale.shape:
                 self.scale.resize_(_scale.shape)
                 self.zero_point.resize_(_zero_point.shape)

@@ -19,15 +19,13 @@ from logging import getLogger
 import numpy as np
 import torch
 import torch.nn as nn
-from QQQ._CUDA import qqq_gemm
 
+from QQQ._CUDA import qqq_gemm
 
 logger = getLogger(__name__)
 
 
-def mul(
-    A, B, C, D, s1, s2, s3, workspace, thread_k=-1, thread_n=-1, sms=-1, max_par=16
-):
+def mul(A, B, C, D, s1, s2, s3, workspace, thread_k=-1, thread_n=-1, sms=-1, max_par=16):
     """INT8xINT4 multiply based on Marlin kernel; can be used within `torch.compile`.
     @A: `torch.int8` input matrix of shape `(m, k)` in standard row-major layout
     @B: `torch.int32` weight matrix of original shape `(k, n)` in the specified format; see `Layer.pack()`
@@ -35,7 +33,8 @@ def mul(
     @D: `torch.half` out matrix of shape `(m, n)` in standard row-major layout
     @s1: `torch.float32` activation per-token quantization scales of shape `(m, 1)`
     @s2: `torch.float32` weight per-channel quantization scales of shape `(1, n)`
-    @s3: `torch.half` weight per-group quantization scales of shape `(m / groupsize, n)`, it should be empty when group_size != -1
+    @s3: `torch.half` weight per-group quantization scales of shape
+         `(m / groupsize, n)`, it should be empty when group_size != -1
     @workspace: `torch.int32` tensor with at least `n / 128 * max_par` entries that are all zero
     @thread_k: `k` size of a thread_tile in `B` (can usually be left as auto -1)
     @thread_n: `n` size of a thread_tile in `B` (can usually be left as auto -1)
@@ -48,33 +47,30 @@ def mul(
 class QuantLinear(nn.Module):
     QUANT_TYPE = "marlin"
 
-    def __init__(
-        self, bits, group_size, infeatures, outfeatures, bias, trainable=False, **kwargs
-    ):
+    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, **kwargs):
         super().__init__()
 
         if torch.version.hip:
             raise ValueError(
-                "Can not use Marlin int4*fp16 kernel with AMD ROCm version of PyTorch as the kernel is not compatible. Please do not use `use_marlin=True` when using ROCm devices."
+                "Can not use Marlin int4*fp16 kernel with AMD ROCm version of PyTorch"
+                " as the kernel is not compatible."
+                " Please do not use `use_marlin=True` when using ROCm devices."
             )
         if not torch.cuda.get_device_capability()[0] >= 8:
             raise ValueError(
-                f'Can not use Marlin int4*fp16 kernel with a device of compute capability {torch.cuda.get_device_capability()}, the minimum compute capability is 8.0 for Marlin kernel. Please do not use `use_marlin=True`, or please upgrade your GPU ("The more you buy, the more you save." - Taiwanese proverb).'
+                f"Can not use Marlin int4*fp16 kernel with a device of compute"
+                f" capability {torch.cuda.get_device_capability()}, the minimum"
+                f" compute capability is 8.0 for Marlin kernel. Please do not use"
+                f' `use_marlin=True`, or please upgrade your GPU ("The more you'
+                f' buy, the more you save." - Taiwanese proverb).'
             )
 
         # (thread_k, thread_n)
         self.thread_config = [(64, 256), (128, 128), (128, 64), (64, 128)]
         if not any(
-            [
-                infeatures % thread_k == 0 and outfeatures % thread_n == 0
-                for thread_k, thread_n in self.thread_config
-            ]
+            [infeatures % thread_k == 0 and outfeatures % thread_n == 0 for thread_k, thread_n in self.thread_config]
         ):
-            raise ValueError(
-                "Not supported `infeatures`: {} and `outfeatures`: {}.".format(
-                    infeatures, outfeatures
-                )
-            )
+            raise ValueError(f"Not supported `infeatures`: {infeatures} and `outfeatures`: {outfeatures}.")
         if bits not in [4]:
             raise NotImplementedError("Only 4 bits are supported.")
         if group_size not in [-1, 128] and group_size != infeatures:
@@ -96,9 +92,7 @@ class QuantLinear(nn.Module):
         self.max_par = 16
         self.register_buffer(
             "B",
-            torch.empty(
-                (self.infeatures // 16, self.outfeatures * 16 // 8), dtype=torch.int32
-            ),
+            torch.empty((self.infeatures // 16, self.outfeatures * 16 // 8), dtype=torch.int32),
         )
         self.register_buffer(
             "s_channel",
@@ -213,9 +207,7 @@ class QuantLinear(nn.Module):
             w = w.permute(1, 0, 2)
             w = w.reshape((self.infeatures, self.outfeatures)).contiguous()
             s = s.reshape((-1, len(self._scale_perm)))[:, self._scale_perm]
-            s_extra = s_extra.reshape((-1, len(self._scale_perm_single)))[
-                :, self._scale_perm_single
-            ]
+            s_extra = s_extra.reshape((-1, len(self._scale_perm_single)))[:, self._scale_perm_single]
             s_extra = s_extra.reshape((-1, self.outfeatures)).contiguous()
         else:
             # NOTE(zhangying): div 2 ** (8 - self.bits)) to deal with right_shift in unpacking
@@ -251,9 +243,7 @@ class QuantLinear(nn.Module):
             self.s_group[:, :] = s.to(self.s_group.device)
             self.s_channel[:, :] = s_extra.to(self.s_channel.device)
         else:
-            self.s_group = torch.tensor(
-                [], dtype=torch.half, device=self.s_channel.device
-            )
+            self.s_group = torch.tensor([], dtype=torch.half, device=self.s_channel.device)
             self.s_channel[:, :] = s.to(self.s_channel.device)
         if linear.bias is not None:
             if self.bias is not None:

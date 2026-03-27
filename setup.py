@@ -1,7 +1,10 @@
-from setuptools import setup, find_packages
-from torch.utils import cpp_extension
-import subprocess, os, shutil
+import os
 import pathlib
+import shutil
+import subprocess
+
+from setuptools import find_packages, setup
+from torch.utils import cpp_extension
 
 HERE = pathlib.Path(__file__).absolute().parent
 
@@ -10,7 +13,7 @@ def install_fast_hadamard():
     # install fast hadamard transform
     hadamard_dir = os.path.join(HERE, "third-party/fast-hadamard-transform")
     pip = shutil.which("pip")
-    retcode = subprocess.call([pip, "install", "--no-build-isolation", "-v", "-e", hadamard_dir])
+    subprocess.call([pip, "install", "--no-build-isolation", "-v", "-e", hadamard_dir])
 
 
 def parse_requirements(filename):
@@ -23,7 +26,7 @@ requirements = parse_requirements("requirements.txt")
 
 setup(
     name="QQQ",
-    ext_modules=[   
+    ext_modules=[
         cpp_extension.CUDAExtension(
             name="QQQ._CUDA",
             sources=["csrc/pybind.cpp", "csrc/qqq_gemm.cu"],

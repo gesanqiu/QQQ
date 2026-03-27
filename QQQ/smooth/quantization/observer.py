@@ -1,13 +1,15 @@
-import numpy as np  # noqa: F401
+import logging
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
-import os
-import logging
-from scipy.optimize import minimize_scalar, minimize
-import matplotlib.pyplot as plt
+from scipy.optimize import minimize, minimize_scalar
+
 from .quant_utils import (
-    fake_quantize_per_tensor_affine,
     fake_quantize_per_channel_affine,
+    fake_quantize_per_tensor_affine,
 )
 
 logger = logging.getLogger("QQQ")
@@ -29,7 +31,7 @@ def _transform_to_ch_axis(x, ch_axis):
 
 class ObserverBase(nn.Module):
     def __init__(self, bit=8, symmetric=False, ch_axis=-1):
-        super(ObserverBase, self).__init__()
+        super().__init__()
         self.bit = bit
         self.symmetric = symmetric
         self.ch_axis = ch_axis
@@ -80,9 +82,7 @@ class ObserverBase(nn.Module):
         shape = x.shape
         pos.remove(seq_pos)
         if len(pos) == 3:
-            x = x.permute(pos[0], seq_pos, pos[1], pos[2]).reshape(
-                shape[pos[0]], shape[seq_pos], -1
-            )
+            x = x.permute(pos[0], seq_pos, pos[1], pos[2]).reshape(shape[pos[0]], shape[seq_pos], -1)
         if len(pos) == 2:
             x = x.permute(pos[0], seq_pos, pos[1])
         return x[observation_mask == 1]
@@ -93,9 +93,7 @@ class ObserverBase(nn.Module):
         shape = x.shape
         pos.remove(seq_pos)
         if len(pos) == 3:
-            x = x.permute(pos[0], seq_pos, pos[1], pos[2]).reshape(
-                shape[pos[0]], shape[seq_pos], -1
-            )
+            x = x.permute(pos[0], seq_pos, pos[1], pos[2]).reshape(shape[pos[0]], shape[seq_pos], -1)
         if len(pos) == 2:
             x = x.permute(pos[0], seq_pos, pos[1])
         return x.reshape(shape[pos[0]] * shape[seq_pos], -1)
@@ -128,9 +126,7 @@ class MinMaxObserver(ObserverBase):
     """
 
     def __init__(self, bit=8, symmetric=False, ch_axis=-1):
-        super(MinMaxObserver, self).__init__(
-            bit=bit, symmetric=symmetric, ch_axis=ch_axis
-        )
+        super().__init__(bit=bit, symmetric=symmetric, ch_axis=ch_axis)
 
     def forward(self, x_orig, observation_mask=None, seq_pos=-1):
         r"""Records the running minimum and maximum of ``x``."""
@@ -156,9 +152,7 @@ class QuantileObserver(ObserverBase):
     """
 
     def __init__(self, bit=8, symmetric=False, ch_axis=-1):
-        super(QuantileObserver, self).__init__(
-            bit=bit, symmetric=symmetric, ch_axis=ch_axis
-        )
+        super().__init__(bit=bit, symmetric=symmetric, ch_axis=ch_axis)
         self.percentile = 1.0
 
     def forward(self, x_orig, observation_mask=None, seq_pos=-1):
@@ -186,9 +180,7 @@ class LSQPlusObserver(ObserverBase):
     """
 
     def __init__(self, bit=8, symmetric=False, ch_axis=-1):
-        super(LSQPlusObserver, self).__init__(
-            bit=bit, symmetric=symmetric, ch_axis=ch_axis
-        )
+        super().__init__(bit=bit, symmetric=symmetric, ch_axis=ch_axis)
         assert self.symmetric is True
         self.mean = None
         self.std = None
@@ -213,9 +205,7 @@ class AvgMinMaxObserver(ObserverBase):
     """average min/max among batches. for ptq calibration"""
 
     def __init__(self, bit=8, symmetric=False, ch_axis=-1):
-        super(AvgMinMaxObserver, self).__init__(
-            bit=bit, symmetric=symmetric, ch_axis=ch_axis
-        )
+        super().__init__(bit=bit, symmetric=symmetric, ch_axis=ch_axis)
         self.cnt = 0
 
     def forward(self, x_orig, observation_mask=None, seq_pos=-1):
@@ -243,9 +233,7 @@ class EMAMinMaxObserver(ObserverBase):
     """Moving average min/max among batches. collect statistics during training"""
 
     def __init__(self, bit=8, symmetric=False, ch_axis=-1, ema_ratio=0.9):
-        super(EMAMinMaxObserver, self).__init__(
-            bit=bit, symmetric=symmetric, ch_axis=ch_axis
-        )
+        super().__init__(bit=bit, symmetric=symmetric, ch_axis=ch_axis)
         self.ema_ratio = ema_ratio
 
     def forward(self, x_orig, observation_mask=None, seq_pos=-1):
@@ -262,21 +250,15 @@ class EMAMinMaxObserver(ObserverBase):
             self.min_val = min_val_cur
             self.max_val = max_val_cur
         else:
-            self.min_val = self.min_val * self.ema_ratio + min_val_cur * (
-                1 - self.ema_ratio
-            )
-            self.max_val = self.max_val * self.ema_ratio + max_val_cur * (
-                1 - self.ema_ratio
-            )
+            self.min_val = self.min_val * self.ema_ratio + min_val_cur * (1 - self.ema_ratio)
+            self.max_val = self.max_val * self.ema_ratio + max_val_cur * (1 - self.ema_ratio)
 
 
 class AvgTokenQuantileObserver(ObserverBase):
     """average min/max among batches."""
 
     def __init__(self, bit=8, symmetric=False, ch_axis=-1):
-        super(AvgTokenQuantileObserver, self).__init__(
-            bit=bit, symmetric=symmetric, ch_axis=ch_axis
-        )
+        super().__init__(bit=bit, symmetric=symmetric, ch_axis=ch_axis)
         self.cnt = 0
         self.percentile = 1.0
 
@@ -317,12 +299,8 @@ class EMAQuantileObserver(ObserverBase):
         threshold=0.9999,
         bins=2048,
     ):
-        super(EMAQuantileObserver, self).__init__(
-            bit=bit, symmetric=symmetric, ch_axis=ch_axis
-        )
-        assert (
-            self.ch_axis == -1
-        ), "Quantile observer only support in per-tensor scheme."
+        super().__init__(bit=bit, symmetric=symmetric, ch_axis=ch_axis)
+        assert self.ch_axis == -1, "Quantile observer only support in per-tensor scheme."
         self.ema_ratio = ema_ratio
         self.threshold = threshold
         self.bins = bins
@@ -350,12 +328,8 @@ class EMAQuantileObserver(ObserverBase):
             self.min_val = max(min_val_cur, -clip_value)
             self.max_val = min(max_val_cur, clip_value)
         else:
-            self.min_val = self.min_val * self.ema_ratio + max(
-                min_val_cur, -clip_value
-            ) * (1.0 - self.ema_ratio)
-            self.max_val = self.max_val * self.ema_ratio + min(
-                max_val_cur, clip_value
-            ) * (1.0 - self.ema_ratio)
+            self.min_val = self.min_val * self.ema_ratio + max(min_val_cur, -clip_value) * (1.0 - self.ema_ratio)
+            self.max_val = self.max_val * self.ema_ratio + min(max_val_cur, clip_value) * (1.0 - self.ema_ratio)
         return x
 
 
@@ -371,12 +345,8 @@ class AvgQuantileObserver(ObserverBase):
         threshold=0.999,
         bins=2048,
     ):
-        super(AvgQuantileObserver, self).__init__(
-            bit=bit, symmetric=symmetric, ch_axis=ch_axis
-        )
-        assert (
-            self.ch_axis == -1
-        ), "Quantile observer only support in per-tensor scheme."
+        super().__init__(bit=bit, symmetric=symmetric, ch_axis=ch_axis)
+        assert self.ch_axis == -1, "Quantile observer only support in per-tensor scheme."
         self.ema_ratio = ema_ratio
         self.threshold = threshold
         self.bins = bins
@@ -416,7 +386,7 @@ class AvgQuantileObserver(ObserverBase):
 
 class MSEObserver(ObserverBase):
     def __init__(self, bit=8, symmetric=False, ch_axis=-1):
-        super(MSEObserver, self).__init__(bit=bit, symmetric=symmetric, ch_axis=ch_axis)
+        super().__init__(bit=bit, symmetric=symmetric, ch_axis=ch_axis)
         self.p = 2.0
         self.num = 100  # candidate num
         self.one_side_dist = None  # 'pos', 'neg', 'no'
@@ -505,13 +475,9 @@ class MSEObserver(ObserverBase):
             assert self.ch_axis == -1
             x = self.remove_padding(x, observation_mask, seq_pos)
         if self.one_side_dist is None:
-            self.one_side_dist = (
-                "pos" if x.min() >= 0.0 else "neg" if x.max() <= 0.0 else "no"
-            )
+            self.one_side_dist = "pos" if x.min() >= 0.0 else "neg" if x.max() <= 0.0 else "no"
 
-        if (
-            self.one_side_dist != "no" or self.symmetric
-        ):  # one-side distribution or symmetric value for 1-d search
+        if self.one_side_dist != "no" or self.symmetric:  # one-side distribution or symmetric value for 1-d search
             best_min, best_max = self.perform_1D_search(x)
         else:  # 2-d search
             best_min, best_max = self.perform_2D_search(x)
@@ -521,9 +487,7 @@ class MSEObserver(ObserverBase):
 
 class AvgMSEObserver(MSEObserver):
     def __init__(self, bit=8, symmetric=False, ch_axis=-1):
-        super(AvgMSEObserver, self).__init__(
-            bit=bit, symmetric=symmetric, ch_axis=ch_axis
-        )
+        super().__init__(bit=bit, symmetric=symmetric, ch_axis=ch_axis)
         self.cnt = 0
         assert self.ch_axis == -1
 
@@ -535,13 +499,9 @@ class AvgMSEObserver(MSEObserver):
             assert self.ch_axis == -1
             x = self.remove_padding(x, observation_mask, seq_pos)
         if self.one_side_dist is None:
-            self.one_side_dist = (
-                "pos" if x.min() >= 0.0 else "neg" if x.max() <= 0.0 else "no"
-            )
+            self.one_side_dist = "pos" if x.min() >= 0.0 else "neg" if x.max() <= 0.0 else "no"
 
-        if (
-            self.one_side_dist != "no" or self.symmetric
-        ):  # one-side distribution or symmetric value for 1-d search
+        if self.one_side_dist != "no" or self.symmetric:  # one-side distribution or symmetric value for 1-d search
             best_min, best_max = self.perform_1D_search(x)
         else:  # 2-d search
             best_min, best_max = self.perform_2D_search(x)
@@ -559,9 +519,7 @@ class AvgMSEObserver(MSEObserver):
 class MSEFastObserver(ObserverBase):
     # golden section search here
     def __init__(self, bit=8, symmetric=False, ch_axis=-1):
-        super(MSEFastObserver, self).__init__(
-            bit=bit, symmetric=symmetric, ch_axis=ch_axis
-        )
+        super().__init__(bit=bit, symmetric=symmetric, ch_axis=ch_axis)
         self.p = 2.0
         self.num = 100  # candidate num
         self.one_side_dist = None  # 'pos', 'neg', 'no'
@@ -574,9 +532,7 @@ class MSEFastObserver(ObserverBase):
         new_min = torch.tensor(new_min).cuda()
         new_max = torch.tensor(new_max).cuda()
         scale, zero_point = self.calculate_qparams(new_min, new_max)
-        x_q = fake_quantize_per_tensor_affine(
-            x, scale.item(), int(zero_point.item()), self.quant_min, self.quant_max
-        )
+        x_q = fake_quantize_per_tensor_affine(x, scale.item(), int(zero_point.item()), self.quant_min, self.quant_max)
         score = self.lp_loss(x_q, x, p=self.p)
         return score
 
@@ -638,16 +594,8 @@ class MSEFastObserver(ObserverBase):
             method="Bounded",
         )
         final_range = result.x
-        best_min = (
-            torch.zeros_like(x_min)
-            if self.one_side_dist == "pos"
-            else -torch.tensor(final_range)
-        )
-        best_max = (
-            torch.zeros_like(x_max)
-            if self.one_side_dist == "neg"
-            else torch.tensor(final_range)
-        )
+        best_min = torch.zeros_like(x_min) if self.one_side_dist == "pos" else -torch.tensor(final_range)
+        best_max = torch.zeros_like(x_max) if self.one_side_dist == "neg" else torch.tensor(final_range)
         return torch.tensor(best_min).cuda(), torch.tensor(best_max).cuda()
 
     def golden_section_2D_search(self, x):
@@ -658,9 +606,7 @@ class MSEFastObserver(ObserverBase):
             y = _transform_to_ch_axis(x, self.ch_axis)
             x_min, x_max = torch._aminmax(y, 1)
             for ch, val in enumerate(y):
-                x_min[ch], x_max[ch] = self.golden_section_search_2D_channel(
-                    y[ch], x_min[ch], x_max[ch]
-                )
+                x_min[ch], x_max[ch] = self.golden_section_search_2D_channel(y[ch], x_min[ch], x_max[ch])
         return x_min, x_max
 
     def golden_section_1D_search(self, x):
@@ -671,9 +617,7 @@ class MSEFastObserver(ObserverBase):
             y = _transform_to_ch_axis(x, self.ch_axis)
             x_min, x_max = torch._aminmax(y, 1)
             for ch, val in enumerate(y):
-                x_min[ch], x_max[ch] = self.golden_section_search_1D_channel(
-                    y[ch], x_min[ch], x_max[ch]
-                )
+                x_min[ch], x_max[ch] = self.golden_section_search_1D_channel(y[ch], x_min[ch], x_max[ch])
         return x_min, x_max
 
     def forward(self, x_orig, observation_mask=None, seq_pos=-1):
@@ -685,13 +629,9 @@ class MSEFastObserver(ObserverBase):
             assert self.ch_axis == -1
             x = self.remove_padding(x, observation_mask, seq_pos)
         if self.one_side_dist is None:
-            self.one_side_dist = (
-                "pos" if x.min() >= 0.0 else "neg" if x.max() <= 0.0 else "no"
-            )
+            self.one_side_dist = "pos" if x.min() >= 0.0 else "neg" if x.max() <= 0.0 else "no"
 
-        if (
-            self.one_side_dist != "no" or self.symmetric
-        ):  # one-side distribution or symmetric value for 1-d search
+        if self.one_side_dist != "no" or self.symmetric:  # one-side distribution or symmetric value for 1-d search
             best_min, best_max = self.golden_section_1D_search(x)
         else:  # 2-d search
             best_min, best_max = self.golden_section_2D_search(x)
@@ -714,12 +654,8 @@ class AvgMSEFastObserver(MSEFastObserver):
             assert self.ch_axis == -1
             x = self.remove_padding(x, observation_mask, seq_pos)
         if self.one_side_dist is None:
-            self.one_side_dist = (
-                "pos" if x.min() >= 0.0 else "neg" if x.max() <= 0.0 else "no"
-            )
-        if (
-            self.one_side_dist != "no" or self.symmetric
-        ):  # one-side distribution or symmetric value for 1-d search
+            self.one_side_dist = "pos" if x.min() >= 0.0 else "neg" if x.max() <= 0.0 else "no"
+        if self.one_side_dist != "no" or self.symmetric:  # one-side distribution or symmetric value for 1-d search
             best_min, best_max = self.golden_section_1D_search(x)
         else:  # 2-d search
             best_min, best_max = self.golden_section_2D_search(x)
@@ -748,13 +684,9 @@ class EMAMSEFastObserver(MSEFastObserver):
             assert self.ch_axis == -1
             x = self.remove_padding(x, observation_mask, seq_pos)
         if self.one_side_dist is None:
-            self.one_side_dist = (
-                "pos" if x.min() >= 0.0 else "neg" if x.max() <= 0.0 else "no"
-            )
+            self.one_side_dist = "pos" if x.min() >= 0.0 else "neg" if x.max() <= 0.0 else "no"
 
-        if (
-            self.one_side_dist != "no" or self.symmetric
-        ):  # one-side distribution or symmetric value for 1-d search
+        if self.one_side_dist != "no" or self.symmetric:  # one-side distribution or symmetric value for 1-d search
             best_min, best_max = self.golden_section_1D_search(x)
         else:  # 2-d search
             best_min, best_max = self.golden_section_2D_search(x)
@@ -762,9 +694,5 @@ class EMAMSEFastObserver(MSEFastObserver):
             self.min_val = best_min
             self.max_val = best_max
         else:
-            self.min_val = self.min_val * self.ema_ratio + best_min * (
-                1 - self.ema_ratio
-            )
-            self.max_val = self.max_val * self.ema_ratio + best_max * (
-                1 - self.ema_ratio
-            )
+            self.min_val = self.min_val * self.ema_ratio + best_min * (1 - self.ema_ratio)
+            self.max_val = self.max_val * self.ema_ratio + best_max * (1 - self.ema_ratio)

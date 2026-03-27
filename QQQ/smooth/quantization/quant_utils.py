@@ -45,9 +45,7 @@ def dequantize_per_tensor_affine(x, scale, zero_point, quant_min, quant_max):
     return x_dequant
 
 
-def fake_quantize_per_channel_affine(
-    x, scale, zero_point, ch_axis, quant_min, quant_max
-):
+def fake_quantize_per_channel_affine(x, scale, zero_point, ch_axis, quant_min, quant_max):
     new_shape = [1] * len(x.shape)
     new_shape[ch_axis] = x.shape[ch_axis]
     scale = scale.reshape(new_shape)

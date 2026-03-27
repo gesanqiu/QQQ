@@ -1,21 +1,23 @@
-from tqdm import tqdm
 import argparse
 import collections
+
+import lm_eval
 import torch
 import torch.nn as nn
-from transformers import AutoTokenizer
-import lm_eval
-from lm_eval import tasks, simple_evaluate
+from lm_eval import simple_evaluate, tasks
 from lm_eval.models.huggingface import HFLM
+from tqdm import tqdm
+from transformers import AutoTokenizer
+
+from QQQ.gptq.models import get_quantized_model_class
 from QQQ.utils import (
+    get_loaders,
     get_model_architecture,
     get_model_config,
-    get_loaders,
     pattern_match,
-    update_results,
     setup_seed,
+    update_results,
 )
-from QQQ.gptq.models import get_quantized_model_class
 
 
 def parse_args():
@@ -63,16 +65,14 @@ def eval_model(model, tokenizer, args):
 
             nlls = []
             for i in tqdm(range(nsamples)):
-                batched_inps = testenc[:, (i * max_length) : ((i + 1) * max_length)].to(
-                    model.device
-                )
+                batched_inps = testenc[:, (i * max_length) : ((i + 1) * max_length)].to(model.device)
                 outputs = model.model(batched_inps)
                 hidden_states = outputs[0]
                 logits = model.lm_head(hidden_states)
                 shift_logits = logits[:, :-1, :]
-                shift_labels = testenc[:, (i * max_length) : ((i + 1) * max_length)][
-                    :, 1:
-                ].to(model.lm_head.weight.device)
+                shift_labels = testenc[:, (i * max_length) : ((i + 1) * max_length)][:, 1:].to(
+                    model.lm_head.weight.device
+                )
                 loss_fct = nn.CrossEntropyLoss()
                 loss = loss_fct(
                     shift_logits.view(-1, shift_logits.size(-1)),

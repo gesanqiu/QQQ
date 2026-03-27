@@ -1,16 +1,19 @@
 import os
+
 import torch
 import torch.nn as nn
 import transformers
 from tqdm import tqdm
+
 from QQQ.utils import (
+    find_layers,
+    free_memory,
     get_loaders,
     get_model_architecture,
-    str2torch_device,
-    find_layers,
     recurse_setattr,
-    free_memory,
+    str2torch_device,
 )
+
 from .models import get_gptq_model_func
 from .qlinear import QuantLinear
 

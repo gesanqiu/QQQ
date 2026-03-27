@@ -1,22 +1,25 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
+from transformers.activations import ACT2FN
+from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 from transformers.models.qwen2.modeling_qwen2 import (
-    Qwen2RMSNorm,
-    Qwen2MLP,
-    Qwen2RotaryEmbedding,
     Qwen2Attention,
     Qwen2DecoderLayer,
-    Qwen2Model,
     Qwen2ForCausalLM,
+    Qwen2MLP,
+    Qwen2Model,
+    Qwen2RMSNorm,
+    Qwen2RotaryEmbedding,
 )
-from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
-from transformers.activations import ACT2FN
-from typing import Optional
-from ..qlinear import QuantLinear
-from ..gptq import *
-from ..quant import *
-from QQQ.utils import find_layers
 from transformers.utils import logging
+
+from QQQ.utils import find_layers
+
+from ..gptq import *
+from ..qlinear import QuantLinear
+from ..quant import *
 
 logger = logging.get_logger(__name__)
 
@@ -76,14 +79,10 @@ def gptq_qwen2_func(model, dataloader, dev, args, force_to_cpu=False):
         cur_device = layer.input_layernorm.weight.device
         inps = [inp.to(cur_device) for inp in inps]
         outs = [out.to(cur_device) for out in outs]
-        attention_mask = [
-            att_mask.to(cur_device) if att_mask is not None else None
-            for att_mask in attention_mask
-        ]
+        attention_mask = [att_mask.to(cur_device) if att_mask is not None else None for att_mask in attention_mask]
         position_ids = [pos_ids.to(cur_device) for pos_ids in position_ids]
         position_embeddings = [
-            (pe[0].to(cur_device), pe[1].to(cur_device)) if pe is not None else None
-            for pe in position_embeddings
+            (pe[0].to(cur_device), pe[1].to(cur_device)) if pe is not None else None for pe in position_embeddings
         ]
 
         full = find_layers(layer)
@@ -175,7 +174,7 @@ class QuantizedQwen2Attention(Qwen2Attention):
         self.layer_idx = layer_idx
         self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
-        self.scaling = self.head_dim ** -0.5
+        self.scaling = self.head_dim**-0.5
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
 
@@ -224,15 +223,9 @@ class QuantizedQwen2MLP(Qwen2MLP):
         self.intermediate_size = config.intermediate_size
         group_size = quant_config["group_size"]
         wbits = quant_config["wbits"]
-        self.gate_proj = QuantLinear(
-            wbits, group_size, self.hidden_size, self.intermediate_size, bias=False
-        )
-        self.up_proj = QuantLinear(
-            wbits, group_size, self.hidden_size, self.intermediate_size, bias=False
-        )
-        self.down_proj = QuantLinear(
-            wbits, group_size, self.intermediate_size, self.hidden_size, bias=False
-        )
+        self.gate_proj = QuantLinear(wbits, group_size, self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = QuantLinear(wbits, group_size, self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = QuantLinear(wbits, group_size, self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
 
 
@@ -243,9 +236,7 @@ class QuantizedQwen2DecoderLayer(Qwen2DecoderLayer):
         self.self_attn = QuantizedQwen2Attention(config, quant_config, layer_idx)
         self.mlp = QuantizedQwen2MLP(config, quant_config)
         self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = Qwen2RMSNorm(
-            config.hidden_size, eps=config.rms_norm_eps
-        )
+        self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         layer_types = getattr(config, "layer_types", None)
         self.attention_type = layer_types[layer_idx] if layer_types else "full_attention"
 
@@ -256,9 +247,7 @@ class QuantizedQwen2Model(Qwen2Model):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = nn.Embedding(
-            config.vocab_size, config.hidden_size, self.padding_idx
-        )
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
             [
                 QuantizedQwen2DecoderLayer(config, quant_config, layer_idx)
