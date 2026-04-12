@@ -1,6 +1,8 @@
-transformers==4.57.6
-datasets==2.16.1
+torch
+transformers>=4.57.0
+datasets
 easydict
 accelerate
 zstandard
 lm_eval==0.4.2
+matplotlib

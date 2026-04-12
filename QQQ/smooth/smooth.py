@@ -5,7 +5,7 @@ import time
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
-from QQQ.utils import get_loaders, get_model_architecture, str2torch_device
+from QQQ.utils import get_loaders, get_model_type, str2torch_device, is_vlm
 
 from .quantization.quantized_module import QuantizedModule
 from .quantization.state import (
@@ -35,34 +35,61 @@ def create_batches(tokenizer, dataloader, batch_size, device):
         attention_mask = (padded_input_ids != tokenizer.pad_token_id).long()
         tmp["input_ids"] = padded_input_ids.to(device)
         tmp["attention_mask"] = attention_mask.to(device)
+        tmp["observation_mask"] = attention_mask.to(device)
         fp_input.append(tmp)
 
     return fp_input, fp_output
 
 
+def create_batches_vlm(dataloader, device):
+    """Build calibration batches from VLM processor outputs (batch_size=1).
+
+    For VLMs the quantized wrappers only cover the language_model (in-place),
+    so observation_mask must be supplied in the batch dict rather than being
+    created inside a top-level wrapper.
+    """
+    logger.info("**prepare vlm fp input**")
+    fp_input = []
+    for sample in dataloader:
+        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in sample.items()}
+        batch["observation_mask"] = batch["attention_mask"].clone()
+        fp_input.append(batch)
+    return fp_input, []
+
+
 @torch.no_grad()
-def smooth(model, tokenizer, smooth_config, args):
+def smooth(model, tokenizer_or_processor, smooth_config, args):
     logger.info(f"the quantization config is {smooth_config}")
     logger.info("begin building calibration data!")
+    model_type = get_model_type(model.config)
+    device = str2torch_device(args.device)
+
     dataloader, _ = get_loaders(
         args.dataset,
         nsamples=args.nsamples,
         seed=args.seed,
-        tokenizer_path=args.tokenizer_path,
         seqlen=args.max_length,
+        tokenizer=tokenizer_or_processor,
         custom_data_path=args.custom_dataset,
     )
-    device = str2torch_device(args.device)
-    fp_input, fp_output = create_batches(tokenizer, dataloader, smooth_config.batch_size, device)
+
+    if is_vlm(model.config):
+        fp_input, fp_output = create_batches_vlm(dataloader, device)
+    else:
+        tok = getattr(tokenizer_or_processor, "tokenizer", tokenizer_or_processor)
+        fp_input, fp_output = create_batches(tok, dataloader, smooth_config.batch_size, device)
 
     logger.info("begin smooth!")
     st = time.time()
     enable_calibration_quantization(model)
-    model_type = get_model_architecture(model.config)
     if model_type == "llama":
         from .migration import migration_llama as migration
     elif model_type == "qwen2":
         from .migration import migration_qwen2 as migration
+    elif model_type == "qwen2_vl":
+        from .migration import migration_qwen2_vl as migration
+    elif model_type == "qwen3_vl":
+        from .migration import migration_qwen2_vl as migration
     else:
         raise NotImplementedError
     migration.set_search_class(smooth_config.smooth_method)

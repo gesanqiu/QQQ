@@ -1,5 +1,4 @@
 import functools
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -12,17 +11,20 @@ from accelerate.big_modeling import (
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
+    AutoModelForImageTextToText,
+    AutoProcessor,
     AutoTokenizer,
     PretrainedConfig,
 )
 
 from .utils import str2torch_device, str2torch_dtype
 
-_MODEL_TYPE = {
-    "LlamaForCausalLM": "llama",
-    "LLaMAForCausalLM": "llama",
-    "Qwen2ForCausalLM": "qwen2",
-}
+_SUPPORTED_MODEL_TYPES = {"llama", "qwen2", "qwen2_vl", "qwen3_vl"}
+
+
+def is_vlm(config):
+    """Detect VLM by checking for vision_config in the model config."""
+    return hasattr(config, "vision_config") and config.vision_config is not None
 
 
 def build_model_and_tokenizer(model_path, tokenizer_path, dtype: str, trust_remote_code: bool = True):
@@ -39,14 +41,27 @@ def build_model_and_tokenizer(model_path, tokenizer_path, dtype: str, trust_remo
     return model, tokenizer
 
 
-def get_model_architecture(config):
-    architectures = getattr(config, "architectures", [])
-    for arch in architectures:
-        if arch in _MODEL_TYPE:
-            return _MODEL_TYPE[arch]
+def build_vlm_and_processor(model_path, processor_path, dtype: str, trust_remote_code: bool = True):
+    model_path = model_path.rstrip("/")
+    processor_path = processor_path.rstrip("/")
+    processor = AutoProcessor.from_pretrained(processor_path, trust_remote_code=trust_remote_code)
+    if processor.tokenizer.pad_token_id is None:
+        processor.tokenizer.pad_token_id = processor.tokenizer.eos_token_id
+    kwargs = {
+        "dtype": str2torch_dtype(dtype),
+        "device_map": "auto",
+    }
+    model = AutoModelForImageTextToText.from_pretrained(model_path, trust_remote_code=trust_remote_code, **kwargs)
+    return model, processor
+
+
+def get_model_type(config):
+    model_type = getattr(config, "model_type", None)
+    if model_type in _SUPPORTED_MODEL_TYPES:
+        return model_type
     raise ValueError(
-        f"Model architectures {architectures} are not supported for now. "
-        f"Supported architectures: {list(_MODEL_TYPE.keys())}"
+        f"Model type '{model_type}' is not supported. "
+        f"Supported types: {_SUPPORTED_MODEL_TYPES}"
     )
 
 
@@ -126,34 +141,57 @@ def get_model_config(model_path: str, trust_remote_code: bool = True, revision: 
     return config
 
 
-def get_transformer_layers(model, model_type):
-    if model_type in ["llama", "qwen2"]:
-        return [layer for layer in model.model.layers]
+def get_language_model(model):
+    """Extract the language model backbone from any supported HuggingFace model.
+
+    VLMs: model.model.language_model (decoder stack under the vision-language wrapper)
+    LLMs: model.model (decoder stack directly)
+    """
+    inner = model.model
+    if hasattr(inner, "language_model"):
+        return inner.language_model
+    if hasattr(inner, "backbone"):
+        return inner.backbone
+    return inner
+
+
+def set_language_model(model, new_module):
+    """Replace the language model backbone in-place."""
+    inner = model.model
+    if hasattr(inner, "language_model"):
+        inner.language_model = new_module
+    elif hasattr(inner, "backbone"):
+        inner.backbone = new_module
     else:
-        raise ValueError(f"Unknown model type {model_type}")
+        model.model = new_module
 
 
-def get_lm_head(model, model_type):
-    if model_type in ["llama", "qwen2"]:
-        return model.lm_head
-    else:
-        raise ValueError(f"Unknown model type {model_type}")
+def get_language_config(model):
+    """Get the config for the language model part.
+
+    For VLMs with a separate text_config, returns that; otherwise the top-level config.
+    """
+    config = model.config
+    if hasattr(config, "text_config") and config.text_config is not None:
+        return config.text_config
+    return config
 
 
-def get_pre_head_layernorm(model, model_type):
+def get_transformer_layers(model, model_type=None):
+    return list(get_language_model(model).layers)
+
+
+def get_lm_head(model, model_type=None):
+    return model.lm_head
+
+
+def get_pre_head_layernorm(model, model_type=None):
     # NOTE(HandH1998): only support RMSnorm
-    if model_type in ["llama", "qwen2"]:
-        pre_head_layernorm = model.model.norm
-        return pre_head_layernorm
-    else:
-        raise ValueError(f"Unknown model type {model_type}")
+    return get_language_model(model).norm
 
 
-def get_embeddings(model, model_type) -> list[torch.nn.Module]:
-    if model_type in ["llama", "qwen2"]:
-        return [model.model.embed_tokens]
-    else:
-        raise ValueError(f"Unknown model type {model_type}")
+def get_embeddings(model, model_type=None) -> list[torch.nn.Module]:
+    return [get_language_model(model).embed_tokens]
 
 
 def remove_empty_parameters(model):

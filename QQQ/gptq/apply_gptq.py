@@ -9,7 +9,7 @@ from QQQ.utils import (
     find_layers,
     free_memory,
     get_loaders,
-    get_model_architecture,
+    get_model_type,
     recurse_setattr,
     str2torch_device,
 )
@@ -19,17 +19,19 @@ from .qlinear import QuantLinear
 
 
 @torch.no_grad()
-def apply_gptq(model, gptq_config, args):
+def apply_gptq(model, gptq_config, args, tokenizer=None):
     gptq_config.nsamples = args.nsamples
+    model_type = get_model_type(model.config)
+
     dataloader, _ = get_loaders(
         args.dataset,
         nsamples=args.nsamples,
         seed=args.seed,
-        tokenizer_path=args.tokenizer_path,
         seqlen=args.max_length,
+        tokenizer=tokenizer,
         custom_data_path=args.custom_dataset,
     )
-    model_type = get_model_architecture(model.config)
+
     gptq_func = get_gptq_model_func(model_type)
     device = str2torch_device(args.device)
 

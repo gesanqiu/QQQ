@@ -2,17 +2,22 @@ from .data_utils import get_loaders
 from .eval_utils import pattern_match, update_results
 from .model_utils import (
     build_model_and_tokenizer,
+    build_vlm_and_processor,
     find_layers,
     get_embeddings,
+    get_language_config,
+    get_language_model,
     get_lm_head,
-    get_model_architecture,
+    get_model_type,
     get_model_config,
     get_pre_head_layernorm,
     get_transformer_layers,
+    is_vlm,
     prepare_for_inference,
     recurse_getattr,
     recurse_setattr,
     remove_empty_parameters,
+    set_language_model,
 )
 from .utils import (
     free_memory,

@@ -60,7 +60,7 @@ python3 examples/quant_model.py \
 --w_group_size -1 \
 --gptq_mse true \
 --gptq_groupsize -1 \
---save_path ${save_path} \
+--save_path ${save_path}
 ```
 ### Evaluate Model
 Here is an example for evaluating perplexity on WikiText2 and accuracy on some zero-shot tasks.

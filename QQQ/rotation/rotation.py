@@ -7,8 +7,8 @@ import tqdm
 from QQQ.utils import (
     free_memory,
     get_embeddings,
+    get_language_config,
     get_lm_head,
-    get_model_architecture,
     get_pre_head_layernorm,
     get_transformer_layers,
     str2torch_device,
@@ -41,30 +41,19 @@ def reset_ln(ln):
 
 
 def fuse_layer_norms(model):
-    model_type = get_model_architecture(model.config)
-    kwargs = {"model": model, "model_type": model_type}
-    layers = get_transformer_layers(**kwargs)
+    layers = get_transformer_layers(model)
 
-    # Fuse the linear operations in Layernorm into the adjacent linear blocks.
     for layer in layers:
-        # fuse the input layernorms into the linear layers
-        if model_type in ["llama", "qwen2"]:
-            fuse_ln_linear(layer.post_attention_layernorm, [layer.mlp.up_proj, layer.mlp.gate_proj])
-            fuse_ln_linear(
-                layer.input_layernorm,
-                [
-                    layer.self_attn.q_proj,
-                    layer.self_attn.k_proj,
-                    layer.self_attn.v_proj,
-                ],
-            )
-            reset_ln(layer.post_attention_layernorm)
-            reset_ln(layer.input_layernorm)
-        else:
-            raise ValueError(f"Unknown model type {model_type}")
+        fuse_ln_linear(layer.post_attention_layernorm, [layer.mlp.up_proj, layer.mlp.gate_proj])
+        fuse_ln_linear(
+            layer.input_layernorm,
+            [layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj],
+        )
+        reset_ln(layer.post_attention_layernorm)
+        reset_ln(layer.input_layernorm)
 
-    fuse_ln_linear(get_pre_head_layernorm(**kwargs), [get_lm_head(**kwargs)])
-    reset_ln(get_pre_head_layernorm(**kwargs))
+    fuse_ln_linear(get_pre_head_layernorm(model), [get_lm_head(model)])
+    reset_ln(get_pre_head_layernorm(model))
     return model
 
 
@@ -97,24 +86,21 @@ def get_orthogonal_matrix(size, mode, device):
         raise ValueError(f"Unknown mode {mode}")
 
 
-def rotate_embeddings(model, Q, model_type, device) -> None:
-    # Rotate the embeddings.
-    for W in get_embeddings(model, model_type):
+def rotate_embeddings(model, Q, device) -> None:
+    for W in get_embeddings(model):
         dtype = W.weight.data.dtype
         W_ = W.weight.data.to(device=device, dtype=torch.float64)
         W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
 
 
-def rotate_attention_inputs(layer, Q, model_type, device) -> None:
-    # Rotate the WQ, WK and WV matrices of the self-attention layer.
+def rotate_attention_inputs(layer, Q, device) -> None:
     for W in [layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj]:
         dtype = W.weight.dtype
         W_ = W.weight.to(device=device, dtype=torch.float64)
         W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
 
 
-def rotate_attention_output(layer, Q, model_type, device) -> None:
-    # Rotate output matrix of the self-attention layer.
+def rotate_attention_output(layer, Q, device) -> None:
     W = layer.self_attn.o_proj
     dtype = W.weight.data.dtype
     W_ = W.weight.data.to(device=device, dtype=torch.float64)
@@ -124,62 +110,54 @@ def rotate_attention_output(layer, Q, model_type, device) -> None:
         W.bias.data = torch.matmul(Q.T, b).to(device="cpu", dtype=dtype)
 
 
-def rotate_mlp_input(layer, Q, model_type, device):
-    # Rotate the MLP input weights.
-    mlp_inputs = [layer.mlp.up_proj, layer.mlp.gate_proj]
-    for W in mlp_inputs:
+def rotate_mlp_input(layer, Q, device):
+    for W in [layer.mlp.up_proj, layer.mlp.gate_proj]:
         dtype = W.weight.dtype
         W_ = W.weight.data.to(device=device, dtype=torch.float64)
         W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
 
 
-def rotate_mlp_output(layer, Q, model_type, device):
-    # Rotate the MLP output weights and bias.
+def rotate_mlp_output(layer, Q, device):
     W = layer.mlp.down_proj
     dtype = W.weight.data.dtype
     W_ = W.weight.data.to(device=device, dtype=torch.float64)
     W.weight.data = torch.matmul(Q.T, W_).to(device="cpu", dtype=dtype)
-    # apply_exact_had_to_linear(W, had_dim=-1, output=False)
-    # apply exact (inverse) hadamard on the weights of mlp output
     if W.bias is not None:
         b = W.bias.data.to(device=device, dtype=torch.float64)
         W.bias.data = torch.matmul(Q.T, b).to(device="cpu", dtype=dtype)
 
 
-def rotate_head(model, Q, model_type, device) -> None:
-    # Rotate the head.
-    W = get_lm_head(model, model_type)
+def rotate_head(model, Q, device) -> None:
+    W = get_lm_head(model)
     dtype = W.weight.data.dtype
     W_ = W.weight.data.to(device=device, dtype=torch.float64)
     W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
 
 
-def rotate_ov_proj(layer, model_type, head_num, head_dim):
+def rotate_ov_proj(layer, head_num, head_dim):
     v_proj = layer.self_attn.v_proj
     o_proj = layer.self_attn.o_proj
     apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True)
-    # apply_exact_had_to_linear(o_proj, had_dim=-1, output=False)
     apply_exact_had_to_linear(o_proj, had_dim=head_dim, output=False)
 
 
 @torch.inference_mode()
 def rotate_model(model, rotation_config, args, Q=None):
     device = str2torch_device(args.device)
-    Q = get_orthogonal_matrix(model.config.hidden_size, rotation_config.rotate_mode, device) if Q is None else Q
-    config = model.config
-    num_heads = config.num_attention_heads
-    model_dim = config.hidden_size
+    lang_config = get_language_config(model)
+    num_heads = lang_config.num_attention_heads
+    model_dim = lang_config.hidden_size
     head_dim = model_dim // num_heads
 
-    model_type = get_model_architecture(model.config)
-    rotate_embeddings(model, Q, model_type, device)
-    rotate_head(model, Q, model_type, device)
+    Q = get_orthogonal_matrix(model_dim, rotation_config.rotate_mode, device) if Q is None else Q
+    rotate_embeddings(model, Q, device)
+    rotate_head(model, Q, device)
     free_memory()
-    layers = get_transformer_layers(model, model_type=model_type)
+    layers = get_transformer_layers(model)
     for idx, layer in enumerate(tqdm.tqdm(layers, unit="layer", desc="Rotating")):
-        rotate_attention_inputs(layer, Q, model_type, device)
-        rotate_attention_output(layer, Q, model_type, device)
-        rotate_mlp_input(layer, Q, model_type, device)
-        rotate_mlp_output(layer, Q, model_type, device)
-        rotate_ov_proj(layer, model_type, num_heads, head_dim)
+        rotate_attention_inputs(layer, Q, device)
+        rotate_attention_output(layer, Q, device)
+        rotate_mlp_input(layer, Q, device)
+        rotate_mlp_output(layer, Q, device)
+        rotate_ov_proj(layer, num_heads, head_dim)
     return model, Q

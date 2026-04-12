@@ -3,8 +3,10 @@ import argparse
 import torch
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
+from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLDecoderLayer
+from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextDecoderLayer
 
-from QQQ.utils import build_model_and_tokenizer, get_model_architecture
+from QQQ.utils import build_model_and_tokenizer, get_model_type
 
 
 def export_smoothed_llama(model, scale_list):
@@ -94,12 +96,95 @@ def export_smoothed_qwen2(model, scale_list):
     return model
 
 
+def export_smoothed_qwen2_vl(model, scale_list):
+    """Apply smooth scales to Qwen2-VL text decoder layers (same layout as Qwen2, with biases)."""
+    cnt = 0
+    for name, module in model.named_modules():
+        if isinstance(module, Qwen2VLDecoderLayer):
+            attn_ln = module.input_layernorm
+            q, k, v, o = (
+                module.self_attn.q_proj,
+                module.self_attn.k_proj,
+                module.self_attn.v_proj,
+                module.self_attn.o_proj,
+            )
+            attn_ln.weight.data /= scale_list[cnt].to(attn_ln.weight.data.device)
+            q.weight.data *= scale_list[cnt].to(q.weight.data.device)
+            k.weight.data *= scale_list[cnt].to(k.weight.data.device)
+            v.weight.data *= scale_list[cnt].to(v.weight.data.device)
+            cnt += 1
+
+            if module.self_attn.num_key_value_heads == module.self_attn.num_heads:
+                o.weight.data *= scale_list[cnt].to(o.weight.data.device)
+                v.weight.data /= scale_list[cnt].reshape(-1, 1).to(v.weight.data.device)
+                v.bias.data /= scale_list[cnt].to(v.weight.data.device)
+            cnt += 1
+
+            ffn_ln = module.post_attention_layernorm
+            gate = module.mlp.gate_proj
+            up = module.mlp.up_proj
+            down = module.mlp.down_proj
+            ffn_ln.weight.data /= scale_list[cnt].to(ffn_ln.weight.data.device)
+            gate.weight.data *= scale_list[cnt].to(gate.weight.data.device)
+            up.weight.data *= scale_list[cnt].to(up.weight.data.device)
+            cnt += 1
+
+            down.weight.data *= scale_list[cnt].to(down.weight.data.device)
+            up.weight.data /= scale_list[cnt].reshape(-1, 1).to(up.weight.data.device)
+            cnt += 1
+
+    return model
+
+
+def export_smoothed_qwen3_vl(model, scale_list):
+    """Apply smooth scales to Qwen3-VL text decoder layers (no biases on q/k/v/o)."""
+    cnt = 0
+    for name, module in model.named_modules():
+        if isinstance(module, Qwen3VLTextDecoderLayer):
+            attn_ln = module.input_layernorm
+            q, k, v, o = (
+                module.self_attn.q_proj,
+                module.self_attn.k_proj,
+                module.self_attn.v_proj,
+                module.self_attn.o_proj,
+            )
+            attn_ln.weight.data /= scale_list[cnt].to(attn_ln.weight.data.device)
+            q.weight.data *= scale_list[cnt].to(q.weight.data.device)
+            k.weight.data *= scale_list[cnt].to(k.weight.data.device)
+            v.weight.data *= scale_list[cnt].to(v.weight.data.device)
+            cnt += 1
+
+            if module.self_attn.num_key_value_heads == module.self_attn.num_heads:
+                o.weight.data *= scale_list[cnt].to(o.weight.data.device)
+                v.weight.data /= scale_list[cnt].reshape(-1, 1).to(v.weight.data.device)
+            cnt += 1
+
+            ffn_ln = module.post_attention_layernorm
+            gate = module.mlp.gate_proj
+            up = module.mlp.up_proj
+            down = module.mlp.down_proj
+            ffn_ln.weight.data /= scale_list[cnt].to(ffn_ln.weight.data.device)
+            gate.weight.data *= scale_list[cnt].to(gate.weight.data.device)
+            up.weight.data *= scale_list[cnt].to(up.weight.data.device)
+            cnt += 1
+
+            down.weight.data *= scale_list[cnt].to(down.weight.data.device)
+            up.weight.data /= scale_list[cnt].reshape(-1, 1).to(up.weight.data.device)
+            cnt += 1
+
+    return model
+
+
 def export_smoothed_model(model, scale_list):
-    model_type = get_model_architecture(model.config)
+    model_type = get_model_type(model.config)
     if model_type == "llama":
         model = export_smoothed_llama(model, scale_list)
     elif model_type == "qwen2":
         model = export_smoothed_qwen2(model, scale_list)
+    elif model_type == "qwen2_vl":
+        model = export_smoothed_qwen2_vl(model, scale_list)
+    elif model_type == "qwen3_vl":
+        model = export_smoothed_qwen3_vl(model, scale_list)
     else:
         raise NotImplementedError
     return model

@@ -2,12 +2,16 @@ import json
 import random
 
 import torch
-from transformers import AutoTokenizer
 
 from datasets import load_dataset
 
 
-def get_pile(nsamples, seed, seqlen, tokenizer_path):
+def _get_raw_tokenizer(tokenizer):
+    """Extract the underlying tokenizer from a processor, or return as-is."""
+    return getattr(tokenizer, "tokenizer", tokenizer)
+
+
+def get_pile(nsamples, seed, seqlen, tokenizer):
     print("get_pile")
     traindata = load_dataset(
         "json",
@@ -15,7 +19,6 @@ def get_pile(nsamples, seed, seqlen, tokenizer_path):
         split="train",
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=False)
     trainenc = tokenizer("\n\n".join(traindata["text"][:1000]), return_tensors="pt")
 
     random.seed(seed)
@@ -30,12 +33,11 @@ def get_pile(nsamples, seed, seqlen, tokenizer_path):
     return trainloader, None
 
 
-def get_wikitext2(nsamples, seed, seqlen, tokenizer_path):
+def get_wikitext2(nsamples, seed, seqlen, tokenizer):
     print("get_wikitext2")
     traindata = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
     testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
 
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=False)
     trainenc = tokenizer("\n\n".join(traindata["text"]), return_tensors="pt")
     testenc = tokenizer("\n\n".join(testdata["text"]), return_tensors="pt")
 
@@ -51,12 +53,10 @@ def get_wikitext2(nsamples, seed, seqlen, tokenizer_path):
     return trainloader, testenc
 
 
-def get_ptb(nsamples, seed, seqlen, tokenizer_path):
+def get_ptb(nsamples, seed, seqlen, tokenizer):
     print("get_ptb")
     traindata = load_dataset("ptb_text_only", "penn_treebank", split="train")
     valdata = load_dataset("ptb_text_only", "penn_treebank", split="validation")
-
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=False)
 
     trainenc = tokenizer("\n\n".join(traindata["sentence"]), return_tensors="pt")
     testenc = tokenizer("\n\n".join(valdata["sentence"]), return_tensors="pt")
@@ -73,7 +73,7 @@ def get_ptb(nsamples, seed, seqlen, tokenizer_path):
     return trainloader, testenc
 
 
-def get_c4(nsamples, seed, seqlen, tokenizer_path):
+def get_c4(nsamples, seed, seqlen, tokenizer):
     print("get_c4")
     traindata = load_dataset(
         "allenai/c4",
@@ -85,8 +85,6 @@ def get_c4(nsamples, seed, seqlen, tokenizer_path):
         data_files={"validation": "en/c4-validation.00000-of-00008.json.gz"},
         split="validation",
     )
-
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=False)
 
     random.seed(seed)
     trainloader = []
@@ -119,12 +117,10 @@ def get_c4(nsamples, seed, seqlen, tokenizer_path):
     return trainloader, valenc
 
 
-def get_ptb_new(nsamples, seed, seqlen, tokenizer_path):
+def get_ptb_new(nsamples, seed, seqlen, tokenizer):
     print("get_ptb_new")
     traindata = load_dataset("ptb_text_only", "penn_treebank", split="train")
     testdata = load_dataset("ptb_text_only", "penn_treebank", split="test")
-
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=False)
 
     trainenc = tokenizer(" ".join(traindata["sentence"]), return_tensors="pt")
     testenc = tokenizer(" ".join(testdata["sentence"]), return_tensors="pt")
@@ -141,7 +137,7 @@ def get_ptb_new(nsamples, seed, seqlen, tokenizer_path):
     return trainloader, testenc
 
 
-def get_c4_new(nsamples, seed, seqlen, tokenizer_path):
+def get_c4_new(nsamples, seed, seqlen, tokenizer):
     print("get_c4_new")
     traindata = load_dataset(
         "allenai/c4",
@@ -153,8 +149,6 @@ def get_c4_new(nsamples, seed, seqlen, tokenizer_path):
         data_files={"validation": "en/c4-validation.00000-of-00008.json.gz"},
         split="validation",
     )
-
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=False)
 
     random.seed(seed)
     trainloader = []
@@ -176,8 +170,37 @@ def get_c4_new(nsamples, seed, seqlen, tokenizer_path):
     return trainloader, valenc
 
 
-def get_custom_data(nsamples, seed, seqlen, tokenizer_path, data_path):
-    raise NotImplementedError("You should implentment the function to load your own dataset!")
+def get_custom_data(nsamples, seed, seqlen, tokenizer, data_path):
+    """Load a JSONL dataset with custom messages for calibration.
+
+    Each line is a JSON object with a ``messages`` field compatible with the
+    tokenizer/processor's ``apply_chat_template``.  Example line::
+
+        {"messages":[{"role":"user","content":[{"type":"image","image":"/path/img.jpg"},{"type":"text","text":"Describe."}]}]}
+
+    Returns a list of dicts (processor output from apply_chat_template).
+    """
+    print("get_custom_data")
+    with open(data_path, "r") as f:
+        lines = [line.strip() for line in f if line.strip()]
+
+    random.seed(seed)
+    if len(lines) > nsamples:
+        lines = random.sample(lines, nsamples)
+
+    trainloader = []
+    for line in lines:
+        record = json.loads(line)
+        messages = record["messages"]
+        inputs = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        trainloader.append(inputs)
+    return trainloader, None
 
 
 def get_loaders(
@@ -185,27 +208,28 @@ def get_loaders(
     nsamples=128,
     seed=0,
     seqlen=2048,
-    tokenizer_path="",
+    tokenizer=None,
     custom_data_path="",
 ):
     if custom_data_path != "":
-        return get_custom_data(nsamples, seed, seqlen, tokenizer_path, custom_data_path)
+        return get_custom_data(nsamples, seed, seqlen, tokenizer, custom_data_path)
+    tok = _get_raw_tokenizer(tokenizer)
     if "wikitext2" in name:
-        return get_wikitext2(nsamples, seed, seqlen, tokenizer_path)
+        return get_wikitext2(nsamples, seed, seqlen, tok)
     if "pile" in name:
-        return get_pile(nsamples, seed, seqlen, tokenizer_path)
+        return get_pile(nsamples, seed, seqlen, tok)
     if "ptb" in name:
         if "new" in name:
-            return get_ptb_new(nsamples, seed, seqlen, tokenizer_path)
-        return get_ptb(nsamples, seed, seqlen, tokenizer_path)
+            return get_ptb_new(nsamples, seed, seqlen, tok)
+        return get_ptb(nsamples, seed, seqlen, tok)
     if "c4" in name:
         if "new" in name:
-            return get_c4_new(nsamples, seed, seqlen, tokenizer_path)
-        return get_c4(nsamples, seed, seqlen, tokenizer_path)
+            return get_c4_new(nsamples, seed, seqlen, tok)
+        return get_c4(nsamples, seed, seqlen, tok)
     if "mix" in name:
-        wiki_train, wiki_val = get_wikitext2(nsamples // 3, seed, seqlen, tokenizer_path)
-        ptb_train, ptb_val = get_ptb(nsamples // 3, seed, seqlen, tokenizer_path)
-        c4_train, c4_val = get_c4(nsamples // 3, seed, seqlen, tokenizer_path)
+        wiki_train, wiki_val = get_wikitext2(nsamples // 3, seed, seqlen, tok)
+        ptb_train, ptb_val = get_ptb(nsamples // 3, seed, seqlen, tok)
+        c4_train, c4_val = get_c4(nsamples // 3, seed, seqlen, tok)
         train = wiki_train + ptb_train + c4_train
         val = None
         return train, val

@@ -9,7 +9,10 @@ from QQQ.rotation import fuse_layer_norms, rotate_model
 from QQQ.smooth import export_smoothed_model, quantize_model, smooth
 from QQQ.utils import (
     build_model_and_tokenizer,
+    build_vlm_and_processor,
     free_memory,
+    get_model_type,
+    is_vlm,
     prepare_for_inference,
     remove_empty_parameters,
     setup_seed,
@@ -131,14 +134,14 @@ def parse_smooth_args(args):
         help="Batch size of smooth calibration inference",
     )
 
-    # Padding removal
-    parser.add_argument(
-        "--is_remove_padding",
-        dest="is_remove_padding",
-        type=str2bool,
-        default=True,
-        help="Remove padding during quantization",
-    )
+    # # Padding removal
+    # parser.add_argument(
+    #     "--is_remove_padding",
+    #     dest="is_remove_padding",
+    #     type=str2bool,
+    #     default=True,
+    #     help="Remove padding during quantization",
+    # )
 
     # Smooth method
     parser.add_argument("--smooth_method", dest="smooth_method", type=str, default="os+")
@@ -260,66 +263,74 @@ def parse_args():
     return args, smooth_args, gptq_args, rotation_args
 
 
+def _load_model(args):
+    """Load model and tokenizer/processor based on architecture."""
+    from transformers import AutoConfig
+
+    config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
+
+    if is_vlm(config):
+        model, processor = build_vlm_and_processor(args.model_path, args.tokenizer_path, args.dtype)
+        return model, processor
+    else:
+        model, tokenizer = build_model_and_tokenizer(args.model_path, args.tokenizer_path, args.dtype)
+        return model, tokenizer
+
+
 @torch.no_grad()
 def main():
     args, smooth_args, gptq_args, rotation_args = parse_args()
-    # set seed
     setup_seed(args.seed)
 
-    # process save_path
     if args.save_path:
         sub_dir_name = args.model_path.split("/")[-1]
         args.save_path = os.path.join(args.save_path, sub_dir_name)
         os.makedirs(args.save_path, exist_ok=True)
 
-    # tokenizer path
     if args.tokenizer_path is None:
         args.tokenizer_path = args.model_path
 
-    # load model
-    model, tokenizer = build_model_and_tokenizer(args.model_path, args.tokenizer_path, args.dtype)
+    model, tokenizer_or_processor = _load_model(args)
+    vlm = is_vlm(model.config)
 
-    # rotate model
+    if vlm and args.rotation:
+        logger.warning("Rotation is not supported for VLM architectures, forcing --rotation false.")
+        args.rotation = False
+
     if args.rotation:
         model = fuse_layer_norms(model)
         model, Q = rotate_model(model, rotation_args, args)
         free_memory()
 
-    # NOTE(HandH1998): No smoothing would give better results for now
     if args.smooth:
-        # smooth model
         assert smooth_args.w_qconfig.group_size == gptq_args.groupsize
         model = quantize_model(model, smooth_args, args)
-        scale_list = smooth(model, tokenizer, smooth_args, args)
+        scale_list = smooth(model, tokenizer_or_processor, smooth_args, args)
         del model
-        del tokenizer
+        del tokenizer_or_processor
         free_memory()
 
-        # load model and apply smooth scales
-        model, tokenizer = build_model_and_tokenizer(args.model_path, args.tokenizer_path, args.dtype)
+        model, tokenizer_or_processor, _ = _load_model(args)
         if args.rotation:
-            # NOTE(HandH1998): smooth scale should work on the rotated model
             model = fuse_layer_norms(model)
             model, _ = rotate_model(model, rotation_args, args, Q)
             free_memory()
 
         model = export_smoothed_model(model, scale_list)
 
-    # apply gptq
     model = prepare_for_inference(model, args.device, args.dtype)
-    model = apply_gptq(model, gptq_args, args)
+    model = apply_gptq(model, gptq_args, args, tokenizer=tokenizer_or_processor)
 
-    # quant_config
     model.config.quantization_config = {
         "group_size": gptq_args.groupsize,
         "quant_method": "qqq",
         "wbits": gptq_args.wbits,
     }
 
-    # save quantized model
     state_dict = remove_empty_parameters(model)
     model.save_pretrained(args.save_path, state_dict=state_dict)
-    tokenizer.save_pretrained(args.save_path)
+    tokenizer_or_processor.save_pretrained(args.save_path)
+
     logger.info(f"Quant Finished! The quantized model is saved at {args.save_path}.")
 
 

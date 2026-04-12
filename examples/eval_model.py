@@ -7,13 +7,14 @@ import torch.nn as nn
 from lm_eval import simple_evaluate, tasks
 from lm_eval.models.huggingface import HFLM
 from tqdm import tqdm
-from transformers import AutoTokenizer
+from transformers import AutoProcessor, AutoTokenizer
 
 from QQQ.gptq.models import get_quantized_model_class
 from QQQ.utils import (
     get_loaders,
-    get_model_architecture,
+    get_model_type,
     get_model_config,
+    is_vlm,
     pattern_match,
     setup_seed,
     update_results,
@@ -53,7 +54,7 @@ def eval_model(model, tokenizer, args):
             _, testloader = get_loaders(
                 task,
                 seed=0,
-                tokenizer_path=args.tokenizer_path,
+                tokenizer=tokenizer,
                 seqlen=max_length,
             )
             if "c4" in task:
@@ -123,10 +124,8 @@ if __name__ == "__main__":
     setup_seed(args.seed)
     config = get_model_config(args.model_path)
     quant_config = config.quantization_config
-    # NOTE(HandH1998): delete quantization_config to avoid getting into transformers' quantization method validation,
-    # as transformers doesn't support qqq for now
     del config.quantization_config
-    model_type = get_model_architecture(config)
+    model_type = get_model_type(config)
     quant_model_class = get_quantized_model_class(model_type)
     model = quant_model_class.from_pretrained(
         args.model_path,
