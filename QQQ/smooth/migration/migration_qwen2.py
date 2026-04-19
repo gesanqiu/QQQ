@@ -2,8 +2,7 @@ import logging
 
 import torch
 import torch.nn as nn
-
-import QQQ.smooth.models.qwen2 as qwen2
+from transformers.models.qwen2.modeling_qwen2 import apply_rotary_pos_emb, repeat_kv
 
 from ..quantization.observer import MinMaxObserver
 from ..quantization.quant_utils import (
@@ -165,9 +164,9 @@ class MigratorBase(nn.Module):
         k = qkv[:, :, sz_q : sz_q + sz_kv].view(B, N, self.extra_dict["num_key_value_heads"], head_dim).transpose(1, 2)
         v = qkv[:, :, sz_q + sz_kv :].view(B, N, self.extra_dict["num_key_value_heads"], head_dim).transpose(1, 2)
         cos, sin = self.extra_dict["position_embeddings"]
-        q, k = qwen2.apply_rotary_pos_emb(q, k, cos, sin)
-        k = qwen2.repeat_kv(k, self.extra_dict["num_key_value_groups"])
-        v = qwen2.repeat_kv(v, self.extra_dict["num_key_value_groups"])
+        q, k = apply_rotary_pos_emb(q, k, cos, sin)
+        k = repeat_kv(k, self.extra_dict["num_key_value_groups"])
+        v = repeat_kv(v, self.extra_dict["num_key_value_groups"])
         if q.device.type == "cuda" and self.extra_dict["attention_mask"] is not None:
             q = q.contiguous()
             k = k.contiguous()

@@ -72,7 +72,9 @@ def export_smoothed_qwen2(model, scale_list):
             cnt += 1
 
             # no smoothing o_proj for models using group attention
-            if module.self_attn.num_key_value_heads == module.self_attn.num_heads:
+            attn_cfg = module.self_attn.config
+            is_full_mha = attn_cfg.num_key_value_heads == attn_cfg.num_attention_heads
+            if is_full_mha:
                 o.weight.data *= scale_list[cnt].to(o.weight.data.device)
                 v.weight.data /= scale_list[cnt].reshape(-1, 1).to(v.weight.data.device)
                 v.bias.data /= scale_list[cnt].to(v.weight.data.device)
@@ -114,7 +116,13 @@ def export_smoothed_qwen2_vl(model, scale_list):
             v.weight.data *= scale_list[cnt].to(v.weight.data.device)
             cnt += 1
 
-            if module.self_attn.num_key_value_heads == module.self_attn.num_heads:
+            attn = module.self_attn
+            attn_cfg = getattr(attn, "config", None)
+            if attn_cfg is not None:
+                is_full_mha = attn_cfg.num_key_value_heads == attn_cfg.num_attention_heads
+            else:
+                is_full_mha = attn.num_key_value_heads == attn.num_heads
+            if is_full_mha:
                 o.weight.data *= scale_list[cnt].to(o.weight.data.device)
                 v.weight.data /= scale_list[cnt].reshape(-1, 1).to(v.weight.data.device)
                 v.bias.data /= scale_list[cnt].to(v.weight.data.device)
@@ -154,7 +162,8 @@ def export_smoothed_qwen3_vl(model, scale_list):
             v.weight.data *= scale_list[cnt].to(v.weight.data.device)
             cnt += 1
 
-            if module.self_attn.num_key_value_heads == module.self_attn.num_heads:
+            attn_cfg = module.self_attn.config
+            if attn_cfg.num_key_value_heads == attn_cfg.num_attention_heads:
                 o.weight.data *= scale_list[cnt].to(o.weight.data.device)
                 v.weight.data /= scale_list[cnt].reshape(-1, 1).to(v.weight.data.device)
             cnt += 1

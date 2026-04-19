@@ -7,8 +7,10 @@ from transformers.models.qwen2_vl.modeling_qwen2_vl import (
     Qwen2VLDecoderLayer,
     Qwen2VLForConditionalGeneration,
     Qwen2VLModel,
-    Qwen2VLRMSNorm,
+    Qwen2RMSNorm,
+    Qwen2VLRotaryEmbedding,
     Qwen2VLTextModel,
+    Qwen2VisionTransformerPretrainedModel,
 )
 from transformers.utils import logging
 
@@ -57,8 +59,11 @@ def gptq_qwen2_vl_func(model, dataloader, dev, args, force_to_cpu=False):
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
-            batch_dev = {k: v.to(dev) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-            model(**batch_dev)
+            if isinstance(batch, dict):
+                batch_dev = {k: v.to(dev) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                model(**batch_dev)
+            else:
+                model(batch[0].to(dev))
         except ValueError:
             pass
     layers[0] = layers[0].module
@@ -118,7 +123,7 @@ def gptq_qwen2_vl_func(model, dataloader, dev, args, force_to_cpu=False):
                     attention_mask=attention_mask_list[j],
                     position_ids=position_ids_list[j],
                     position_embeddings=position_embeddings_list[j],
-                )
+                )[0]
             for h in handles:
                 h.remove()
 
@@ -142,7 +147,7 @@ def gptq_qwen2_vl_func(model, dataloader, dev, args, force_to_cpu=False):
                 attention_mask=attention_mask_list[j],
                 position_ids=position_ids_list[j],
                 position_embeddings=position_embeddings_list[j],
-            )
+            )[0]
 
         if force_to_cpu:
             layers[i] = layer.cpu()
@@ -156,34 +161,6 @@ def gptq_qwen2_vl_func(model, dataloader, dev, args, force_to_cpu=False):
 
     text_config.use_cache = use_cache
     return quantizers
-
-
-class QuantizedQwen2VLAttention(Qwen2VLAttention):
-    def __init__(self, config, quant_config, layer_idx):
-        nn.Module.__init__(self)
-        self.config = config
-        self.layer_idx = layer_idx
-        self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
-        self.scaling = self.head_dim ** -0.5
-        self.attention_dropout = config.attention_dropout
-        self.is_causal = True
-        self.hidden_size = config.hidden_size
-        self.num_heads = config.num_attention_heads
-        self.num_key_value_heads = config.num_key_value_heads
-        self.rope_parameters = config.rope_parameters
-
-        group_size = quant_config["group_size"]
-        wbits = quant_config["wbits"]
-        self.q_proj = QuantLinear(wbits, group_size, config.hidden_size, config.num_attention_heads * self.head_dim, bias=True)
-        self.k_proj = QuantLinear(wbits, group_size, config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
-        self.v_proj = QuantLinear(wbits, group_size, config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
-        self.o_proj = QuantLinear(wbits, group_size, config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
-        layer_types = getattr(config, "layer_types", None)
-        if layer_types and layer_types[layer_idx] == "sliding_attention":
-            self.sliding_window = config.sliding_window
-        else:
-            self.sliding_window = None
 
 
 class QuantizedQwen2VLMLP(Qwen2MLP):
@@ -200,33 +177,62 @@ class QuantizedQwen2VLMLP(Qwen2MLP):
         self.act_fn = ACT2FN[config.hidden_act]
 
 
+class QuantizedQwen2VLAttention(Qwen2VLAttention):
+    def __init__(self, config, quant_config, layer_idx):
+        nn.Module.__init__(self)
+        self.config = config
+        self.layer_idx = layer_idx
+        self.hidden_size = config.hidden_size
+        self.num_heads = config.num_attention_heads
+        self.head_dim = self.hidden_size // self.num_heads
+        self.num_key_value_heads = config.num_key_value_heads
+        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+        self.is_causal = True
+        self.attention_dropout = config.attention_dropout
+        self.rope_scaling = config.rope_scaling
+        self.scaling = self.head_dim**-0.5
+
+        group_size = quant_config["group_size"]
+        wbits = quant_config["wbits"]
+        self.q_proj = QuantLinear(wbits, group_size, self.hidden_size, self.num_heads * self.head_dim, bias=True)
+        self.k_proj = QuantLinear(wbits, group_size, self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
+        self.v_proj = QuantLinear(wbits, group_size, self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
+        self.o_proj = QuantLinear(wbits, group_size, self.num_heads * self.head_dim, config.hidden_size, bias=False)
+        self.sliding_window = config.sliding_window if config.layer_types[layer_idx] == "sliding_attention" else None
+
+        self.rotary_emb = Qwen2VLRotaryEmbedding(config=config)
+
+
 class QuantizedQwen2VLDecoderLayer(Qwen2VLDecoderLayer):
     def __init__(self, config, quant_config, layer_idx):
         nn.Module.__init__(self)
         self.hidden_size = config.hidden_size
+
         self.self_attn = QuantizedQwen2VLAttention(config, quant_config, layer_idx)
+
         self.mlp = QuantizedQwen2VLMLP(config, quant_config)
-        self.input_layernorm = Qwen2VLRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = Qwen2VLRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        layer_types = getattr(config, "layer_types", None)
-        self.attention_type = layer_types[layer_idx] if layer_types else "full_attention"
+        self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+        self.attention_type = config.layer_types[layer_idx]
 
 
 class QuantizedQwen2VLTextModel(Qwen2VLTextModel):
     def __init__(self, config, quant_config):
         super(Qwen2VLTextModel, self).__init__(config)
-        from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLRotaryEmbedding
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
+
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList([
             QuantizedQwen2VLDecoderLayer(config, quant_config, i)
             for i in range(config.num_hidden_layers)
         ])
-        self.norm = Qwen2VLRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Qwen2VLRotaryEmbedding(config=config)
+        self.has_sliding_layers = "sliding_attention" in self.config.layer_types
+        
         self.gradient_checkpointing = False
-        self.has_sliding_layers = "sliding_attention" in getattr(config, "layer_types", [])
         self.post_init()
 
 
@@ -234,10 +240,10 @@ class QuantizedQwen2VLModel(Qwen2VLModel):
     """Quantized language model + FP vision encoder."""
     def __init__(self, config, quant_config):
         super(Qwen2VLModel, self).__init__(config)
-        from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VisionTransformerPretrainedModel
         self.visual = Qwen2VisionTransformerPretrainedModel._from_config(config.vision_config)
         self.language_model = QuantizedQwen2VLTextModel(config.text_config, quant_config)
         self.rope_deltas = None
+
         self.post_init()
 
 
@@ -246,4 +252,5 @@ class QuantizedQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
         super(Qwen2VLForConditionalGeneration, self).__init__(config)
         self.model = QuantizedQwen2VLModel(config, quant_config)
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
+
         self.post_init()

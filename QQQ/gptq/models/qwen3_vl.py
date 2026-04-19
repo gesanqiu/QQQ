@@ -9,6 +9,8 @@ from transformers.models.qwen3_vl.modeling_qwen3_vl import (
     Qwen3VLTextMLP,
     Qwen3VLTextModel,
     Qwen3VLTextRMSNorm,
+    Qwen3VLTextRotaryEmbedding,
+    Qwen3VLVisionModel,
 )
 from transformers.utils import logging
 
@@ -56,8 +58,11 @@ def gptq_qwen3_vl_func(model, dataloader, dev, args, force_to_cpu=False):
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
-            batch_dev = {k: v.to(dev) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-            model(**batch_dev)
+            if isinstance(batch, dict):
+                batch_dev = {k: v.to(dev) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                model(**batch_dev)
+            else:
+                model(batch[0].to(dev))
         except ValueError:
             pass
     layers[0] = layers[0].module
@@ -157,6 +162,20 @@ def gptq_qwen3_vl_func(model, dataloader, dev, args, force_to_cpu=False):
     return quantizers
 
 
+class QuantizedQwen3VLTextMLP(Qwen3VLTextMLP):
+    def __init__(self, config, quant_config):
+        nn.Module.__init__(self)
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = config.intermediate_size
+        group_size = quant_config["group_size"]
+        wbits = quant_config["wbits"]
+        self.gate_proj = QuantLinear(wbits, group_size, self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = QuantLinear(wbits, group_size, self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = QuantLinear(wbits, group_size, self.intermediate_size, self.hidden_size, bias=False)
+        self.act_fn = ACT2FN[config.hidden_act]
+
+
 class QuantizedQwen3VLTextAttention(Qwen3VLTextAttention):
     def __init__(self, config, quant_config, layer_idx):
         nn.Module.__init__(self)
@@ -179,20 +198,6 @@ class QuantizedQwen3VLTextAttention(Qwen3VLTextAttention):
         self.k_norm = Qwen3VLTextRMSNorm(self.head_dim, eps=config.rms_norm_eps)
 
 
-class QuantizedQwen3VLTextMLP(Qwen3VLTextMLP):
-    def __init__(self, config, quant_config):
-        nn.Module.__init__(self)
-        self.config = config
-        self.hidden_size = config.hidden_size
-        self.intermediate_size = config.intermediate_size
-        group_size = quant_config["group_size"]
-        wbits = quant_config["wbits"]
-        self.gate_proj = QuantLinear(wbits, group_size, self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = QuantLinear(wbits, group_size, self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = QuantLinear(wbits, group_size, self.intermediate_size, self.hidden_size, bias=False)
-        self.act_fn = ACT2FN[config.hidden_act]
-
-
 class QuantizedQwen3VLTextDecoderLayer(Qwen3VLTextDecoderLayer):
     def __init__(self, config, quant_config, layer_idx):
         nn.Module.__init__(self)
@@ -206,7 +211,6 @@ class QuantizedQwen3VLTextDecoderLayer(Qwen3VLTextDecoderLayer):
 class QuantizedQwen3VLTextModel(Qwen3VLTextModel):
     def __init__(self, config, quant_config):
         super(Qwen3VLTextModel, self).__init__(config)
-        from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextRotaryEmbedding
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
@@ -223,7 +227,6 @@ class QuantizedQwen3VLTextModel(Qwen3VLTextModel):
 class QuantizedQwen3VLModel(Qwen3VLModel):
     def __init__(self, config, quant_config):
         super(Qwen3VLModel, self).__init__(config)
-        from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel
         self.visual = Qwen3VLVisionModel._from_config(config.vision_config)
         self.language_model = QuantizedQwen3VLTextModel(config.text_config, quant_config)
         self.rope_deltas = None

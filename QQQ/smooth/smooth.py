@@ -74,7 +74,12 @@ def smooth(model, tokenizer_or_processor, smooth_config, args):
     )
 
     if is_vlm(model.config):
-        fp_input, fp_output = create_batches_vlm(dataloader, device)
+        # Custom JSONL yields processor dicts; public datasets yield (input_ids, target) tuples like LLMs.
+        if dataloader and isinstance(dataloader[0], dict):
+            fp_input, fp_output = create_batches_vlm(dataloader, device)
+        else:
+            tok = getattr(tokenizer_or_processor, "tokenizer", tokenizer_or_processor)
+            fp_input, fp_output = create_batches(tok, dataloader, smooth_config.batch_size, device)
     else:
         tok = getattr(tokenizer_or_processor, "tokenizer", tokenizer_or_processor)
         fp_input, fp_output = create_batches(tok, dataloader, smooth_config.batch_size, device)

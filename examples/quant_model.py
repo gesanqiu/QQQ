@@ -310,7 +310,7 @@ def main():
         del tokenizer_or_processor
         free_memory()
 
-        model, tokenizer_or_processor, _ = _load_model(args)
+        model, tokenizer_or_processor = _load_model(args)
         if args.rotation:
             model = fuse_layer_norms(model)
             model, _ = rotate_model(model, rotation_args, args, Q)

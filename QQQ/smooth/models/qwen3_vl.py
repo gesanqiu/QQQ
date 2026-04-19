@@ -6,14 +6,21 @@ and the language_model accepts deepstack visual embeddings.
 """
 
 import logging
+from typing import Callable, Optional, Tuple
 
 import torch
 from torch import nn
+from transformers.cache_utils import Cache, DynamicCache
+from transformers.masking_utils import create_causal_mask
+from transformers.modeling_outputs import BaseModelOutputWithPast
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from transformers.models.qwen3_vl.modeling_qwen3_vl import (
     Qwen3VLTextAttention,
     Qwen3VLTextDecoderLayer,
     Qwen3VLTextMLP,
     Qwen3VLTextModel,
+    apply_rotary_pos_emb,
+    eager_attention_forward,
 )
 
 from QQQ.smooth.migration.migration_qwen2_vl import migration
@@ -80,14 +87,10 @@ class QuantizedQwen3VLTextAttention(Qwen3VLTextAttention, QuantizedModule):
         self.config = org_module.config
         self.qinput = qinput
         self.layer_idx = org_module.layer_idx
-        self.layer_type = org_module.layer_type
 
         self.attention_dropout = org_module.attention_dropout
-        self.hidden_size = self.config.hidden_size
-        self.num_heads = self.config.num_attention_heads
         self.head_dim = org_module.head_dim
-        self.num_key_value_heads = self.config.num_key_value_heads
-        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+        self.num_key_value_groups = org_module.num_key_value_groups
         self.is_causal = org_module.is_causal
         self.scaling = org_module.scaling
 
@@ -100,13 +103,18 @@ class QuantizedQwen3VLTextAttention(Qwen3VLTextAttention, QuantizedModule):
         self.q_norm = org_module.q_norm
         self.k_norm = org_module.k_norm
 
-    def forward(self, hidden_states, position_embeddings, attention_mask=None,
-                position_ids=None, past_key_values=None, use_cache=False,
-                cache_position=None, **kwargs):
-        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
-        from transformers.models.qwen3_vl.modeling_qwen3_vl import apply_rotary_pos_emb, eager_attention_forward
-
-        observation_mask = kwargs.get("observation_mask")
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: Tuple[torch.Tensor, torch.Tensor],
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        use_cache: bool = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,
+    ):
+        observation_mask = kwargs["observation_mask"]
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -115,14 +123,12 @@ class QuantizedQwen3VLTextAttention(Qwen3VLTextAttention, QuantizedModule):
                 self.q_proj.module.weight, self.k_proj.module.weight, self.v_proj.module.weight,
             ])
             extra_dict = {
-                "num_heads": self.num_heads,
-                "num_key_value_heads": self.num_key_value_heads,
+                "num_heads": self.config.num_attention_heads,
+                "num_key_value_heads": self.config.num_key_value_heads,
                 "num_key_value_groups": self.num_key_value_groups,
                 "position_embeddings": position_embeddings,
                 "head_dim": self.head_dim,
-                "position_ids": position_ids,
                 "attention_mask": attention_mask,
-                "cache_position": cache_position,
                 "observation_mask": observation_mask,
             }
             best_scale = migration(
@@ -142,15 +148,24 @@ class QuantizedQwen3VLTextAttention(Qwen3VLTextAttention, QuantizedModule):
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
         if past_key_values is not None:
-            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            key_states, value_states = past_key_values.update(
+                key_states, value_states, self.layer_idx, cache_kwargs
+            )
 
-        attention_interface = ALL_ATTENTION_FUNCTIONS.get_interface(
-            self.config._attn_implementation, eager_attention_forward,
-        )
+        attention_interface: Callable = eager_attention_forward
+        if self.config._attn_implementation != "eager":
+            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+
         attn_output, attn_weights = attention_interface(
-            self, query_states, key_states, value_states, attention_mask,
+            self,
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
+            **kwargs,
         )
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
 
@@ -184,17 +199,27 @@ class QuantizedQwen3VLTextDecoderLayer(Qwen3VLTextDecoderLayer, QuantizedModule)
         self.input_layernorm = org_module.input_layernorm
         self.post_attention_layernorm = org_module.post_attention_layernorm
 
-    def forward(self, hidden_states, position_embeddings=None, attention_mask=None,
-                position_ids=None, past_key_values=None, use_cache=False, **kwargs):
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        use_cache: bool = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,
+    ):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
 
-        hidden_states, self_attn_weights = self.self_attn(
+        hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
             use_cache=use_cache,
+            cache_position=cache_position,
             position_embeddings=position_embeddings,
             **kwargs,
         )
@@ -225,33 +250,51 @@ class QuantizedQwen3VLTextModel(Qwen3VLTextModel, QuantizedModule):
         self.norm = org_module.norm
         self.gradient_checkpointing = False
 
-    def forward(self, input_ids=None, attention_mask=None, position_ids=None,
-                past_key_values=None, inputs_embeds=None, use_cache=None,
-                visual_pos_masks=None, deepstack_visual_embeds=None,
-                observation_mask=None, **kwargs):
-        from transformers.cache_utils import DynamicCache
-        from transformers.masking_utils import create_causal_mask
-        from transformers.modeling_outputs import BaseModelOutputWithPast
-
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        visual_pos_masks: Optional[torch.Tensor] = None,
+        deepstack_visual_embeds: Optional[list] = None,
+        observation_mask: Optional[torch.Tensor] = None,
+        **kwargs,
+    ):
         use_cache = use_cache if use_cache is not None else self.config.use_cache
+
+        if (input_ids is None) ^ (inputs_embeds is not None):
+            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+
+        if use_cache and past_key_values is None:
+            past_key_values = DynamicCache(config=self.config)
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        batch_size, seq_length = inputs_embeds.shape[:2]
-
-        if use_cache and past_key_values is None:
-            past_key_values = DynamicCache()
-
-        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
-        device = inputs_embeds.device
-
-        cache_position = kwargs.pop("cache_position", None)
         if cache_position is None:
-            cache_position = torch.arange(past_seen_tokens, past_seen_tokens + seq_length, device=device)
+            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            cache_position = torch.arange(
+                past_seen_tokens,
+                past_seen_tokens + inputs_embeds.shape[1],
+                device=inputs_embeds.device,
+            )
 
         if position_ids is None:
-            position_ids = cache_position.unsqueeze(0)
+            position_ids = cache_position.view(1, 1, -1).expand(3, inputs_embeds.shape[0], -1)
+        elif position_ids.ndim == 2:
+            position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
+
+        if position_ids.ndim == 3 and position_ids.shape[0] == 4:
+            text_position_ids = position_ids[0]
+            position_ids = position_ids[1:]
+        else:
+            text_position_ids = position_ids[0]
+
+        assert observation_mask is not None
 
         causal_mask = create_causal_mask(
             config=self.config,
@@ -259,32 +302,48 @@ class QuantizedQwen3VLTextModel(Qwen3VLTextModel, QuantizedModule):
             attention_mask=attention_mask,
             cache_position=cache_position,
             past_key_values=past_key_values,
-            position_ids=position_ids,
+            position_ids=text_position_ids,
         )
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         for layer_idx, decoder_layer in enumerate(self.layers):
-            if deepstack_visual_embeds is not None and visual_pos_masks is not None:
-                if layer_idx < len(deepstack_visual_embeds):
-                    vis_embed = deepstack_visual_embeds[layer_idx]
-                    hidden_states[visual_pos_masks] = hidden_states[visual_pos_masks] + vis_embed.to(
-                        hidden_states.device, hidden_states.dtype
-                    )
-
             hidden_states = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask,
-                position_ids=position_ids,
+                position_ids=text_position_ids,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
                 observation_mask=observation_mask,
+                **kwargs,
             )
+            if (
+                deepstack_visual_embeds is not None
+                and visual_pos_masks is not None
+                and layer_idx in range(len(deepstack_visual_embeds))
+            ):
+                hidden_states = self._deepstack_process(
+                    hidden_states,
+                    visual_pos_masks,
+                    deepstack_visual_embeds[layer_idx],
+                )
 
         hidden_states = self.norm(hidden_states)
-        return BaseModelOutputWithPast(last_hidden_state=hidden_states, past_key_values=past_key_values)
+        return BaseModelOutputWithPast(
+            last_hidden_state=hidden_states,
+            past_key_values=past_key_values,
+        )
+
+    def _deepstack_process(
+        self, hidden_states: torch.Tensor, visual_pos_masks: torch.Tensor, visual_embeds: torch.Tensor
+    ):
+        visual_pos_masks = visual_pos_masks.to(hidden_states.device)
+        visual_embeds = visual_embeds.to(hidden_states.device, hidden_states.dtype)
+        local_this = hidden_states[visual_pos_masks, :].clone() + visual_embeds
+        hidden_states[visual_pos_masks, :] = local_this
+        return hidden_states
 
 
