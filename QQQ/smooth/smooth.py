@@ -42,23 +42,26 @@ def create_batches(tokenizer, dataloader, batch_size, device):
 
 
 def create_batches_vlm(dataloader, device):
-    """Build calibration batches from VLM processor outputs (batch_size=1).
-
-    For VLMs the quantized wrappers only cover the language_model (in-place),
-    so observation_mask must be supplied in the batch dict rather than being
-    created inside a top-level wrapper.
-    """
     logger.info("**prepare vlm fp input**")
     fp_input = []
-    for sample in dataloader:
-        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in sample.items()}
-        batch["observation_mask"] = batch["attention_mask"].clone()
+    for inp, _ in dataloader:
+        if isinstance(inp, dict):
+            batch = inp.to(device)
+            batch["observation_mask"] = batch["attention_mask"].clone()
+        else:
+            input_ids = inp.to(device)
+            attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=device)
+            batch = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "observation_mask": attention_mask.clone(),
+            }
         fp_input.append(batch)
     return fp_input, []
 
 
 @torch.no_grad()
-def smooth(model, tokenizer_or_processor, smooth_config, args):
+def smooth(model, tokenizer, smooth_config, args):
     logger.info(f"the quantization config is {smooth_config}")
     logger.info("begin building calibration data!")
     model_type = get_model_type(model.config)
@@ -69,20 +72,14 @@ def smooth(model, tokenizer_or_processor, smooth_config, args):
         nsamples=args.nsamples,
         seed=args.seed,
         seqlen=args.max_length,
-        tokenizer=tokenizer_or_processor,
+        tokenizer=tokenizer,
         custom_data_path=args.custom_dataset,
     )
 
     if is_vlm(model.config):
-        # Custom JSONL yields processor dicts; public datasets yield (input_ids, target) tuples like LLMs.
-        if dataloader and isinstance(dataloader[0], dict):
-            fp_input, fp_output = create_batches_vlm(dataloader, device)
-        else:
-            tok = getattr(tokenizer_or_processor, "tokenizer", tokenizer_or_processor)
-            fp_input, fp_output = create_batches(tok, dataloader, smooth_config.batch_size, device)
+        fp_input, fp_output = create_batches_vlm(dataloader, device)
     else:
-        tok = getattr(tokenizer_or_processor, "tokenizer", tokenizer_or_processor)
-        fp_input, fp_output = create_batches(tok, dataloader, smooth_config.batch_size, device)
+        fp_input, fp_output = create_batches(tokenizer, dataloader, smooth_config.batch_size, device)
 
     logger.info("begin smooth!")
     st = time.time()

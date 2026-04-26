@@ -178,7 +178,9 @@ def get_custom_data(nsamples, seed, seqlen, tokenizer, data_path):
 
         {"messages":[{"role":"user","content":[{"type":"image","image":"/path/img.jpg"},{"type":"text","text":"Describe."}]}]}
 
-    Returns a list of dicts (processor output from apply_chat_template).
+    Returns a list of ``(inputs, tar)`` tuples aligned with other loaders:
+    ``inputs`` is the processor output dict from ``apply_chat_template``;
+    ``tar`` is ``None`` (labels are not used for this calibration path).
     """
     print("get_custom_data")
     with open(data_path, "r") as f:
@@ -199,7 +201,7 @@ def get_custom_data(nsamples, seed, seqlen, tokenizer, data_path):
             return_dict=True,
             return_tensors="pt",
         )
-        trainloader.append(inputs)
+        trainloader.append((inputs, None))
     return trainloader, None
 
 

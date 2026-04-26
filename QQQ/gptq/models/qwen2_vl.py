@@ -59,11 +59,7 @@ def gptq_qwen2_vl_func(model, dataloader, dev, args, force_to_cpu=False):
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
-            if isinstance(batch, dict):
-                batch_dev = {k: v.to(dev) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-                model(**batch_dev)
-            else:
-                model(batch[0].to(dev))
+            model(batch[0].to(dev))
         except ValueError:
             pass
     layers[0] = layers[0].module
