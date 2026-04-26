@@ -7,7 +7,7 @@ from transformers.models.qwen2_vl.modeling_qwen2_vl import (
     Qwen2VLDecoderLayer,
     Qwen2VLForConditionalGeneration,
     Qwen2VLModel,
-    Qwen2RMSNorm,
+    Qwen2VLRMSNorm,
     Qwen2VLRotaryEmbedding,
     Qwen2VLTextModel,
     Qwen2VisionTransformerPretrainedModel,
@@ -123,7 +123,7 @@ def gptq_qwen2_vl_func(model, dataloader, dev, args, force_to_cpu=False):
                     attention_mask=attention_mask_list[j],
                     position_ids=position_ids_list[j],
                     position_embeddings=position_embeddings_list[j],
-                )[0]
+                )
             for h in handles:
                 h.remove()
 
@@ -147,7 +147,7 @@ def gptq_qwen2_vl_func(model, dataloader, dev, args, force_to_cpu=False):
                 attention_mask=attention_mask_list[j],
                 position_ids=position_ids_list[j],
                 position_embeddings=position_embeddings_list[j],
-            )[0]
+            )
 
         if force_to_cpu:
             layers[i] = layer.cpu()
@@ -211,8 +211,8 @@ class QuantizedQwen2VLDecoderLayer(Qwen2VLDecoderLayer):
         self.self_attn = QuantizedQwen2VLAttention(config, quant_config, layer_idx)
 
         self.mlp = QuantizedQwen2VLMLP(config, quant_config)
-        self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = Qwen2VLRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = Qwen2VLRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.attention_type = config.layer_types[layer_idx]
 
@@ -228,7 +228,7 @@ class QuantizedQwen2VLTextModel(Qwen2VLTextModel):
             QuantizedQwen2VLDecoderLayer(config, quant_config, i)
             for i in range(config.num_hidden_layers)
         ])
-        self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = Qwen2VLRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Qwen2VLRotaryEmbedding(config=config)
         self.has_sliding_layers = "sliding_attention" in self.config.layer_types
         
