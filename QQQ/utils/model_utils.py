@@ -200,3 +200,37 @@ def remove_empty_parameters(model):
         if v.numel() > 0:
             state_dict[k] = v
     return state_dict
+
+
+def load_qqq_quantized_model(
+    model_path: str,
+    *,
+    trust_remote_code: bool = True,
+    torch_dtype=None,
+    **kwargs,
+):
+    """Load a QQQ GPTQ/QQQ checkpoint using the registered ``Quantized*`` class.
+
+    Same pattern as ``examples/test_model.py``; kept here for reuse by external
+    tooling (e.g. ONNX export pipelines).
+    """
+    from ..gptq.models import get_quantized_model_class
+
+    path = model_path.rstrip("/")
+    config = get_model_config(path, trust_remote_code=trust_remote_code)
+    quant_config = config.quantization_config
+    if quant_config is None:
+        raise ValueError(f"quantization_config missing in config under {path}")
+    del config.quantization_config
+    model_type = get_model_type(config)
+    quant_cls = get_quantized_model_class(model_type)
+    model = quant_cls.from_pretrained(
+        path,
+        config=config,
+        quant_config=quant_config,
+        trust_remote_code=trust_remote_code,
+        torch_dtype=torch_dtype,
+        **kwargs,
+    )
+    model.config.quantization_config = quant_config
+    return model
