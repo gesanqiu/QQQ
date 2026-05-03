@@ -1,4 +1,4 @@
-"""Migration module for Qwen2-VL and Qwen3-VL.
+"""Migration module for Qwen2-VL, Qwen2.5-VL (`qwen2_5_vl`), and Qwen3-VL.
 
 Inherits scale search from migration_qwen2 but overrides `qkv_function`
 to use `apply_multimodal_rotary_pos_emb` (3-D RoPE sections) instead of

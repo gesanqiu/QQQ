@@ -1,6 +1,7 @@
 from QQQ.smooth.models import (
     QuantizedLlamaModel,
     QuantizedQwen2Model,
+    QuantizedQwen2_5_VLTextModel,
     QuantizedQwen2VLTextModel,
     QuantizedQwen3VLTextModel,
 )
@@ -11,6 +12,7 @@ _QUANTIZED_MODEL_MAP = {
     "llama": QuantizedLlamaModel,
     "qwen2": QuantizedQwen2Model,
     "qwen2_vl": QuantizedQwen2VLTextModel,
+    "qwen2_5_vl": QuantizedQwen2_5_VLTextModel,
     "qwen3_vl": QuantizedQwen3VLTextModel,
 }
 

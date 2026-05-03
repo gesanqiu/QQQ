@@ -19,7 +19,7 @@ from transformers import (
 
 from .utils import str2torch_device, str2torch_dtype
 
-_SUPPORTED_MODEL_TYPES = {"llama", "qwen2", "qwen2_vl", "qwen3_vl"}
+_SUPPORTED_MODEL_TYPES = {"llama", "qwen2", "qwen2_vl", "qwen2_5_vl", "qwen3_vl"}
 
 
 def is_vlm(config):
