@@ -92,6 +92,8 @@ def smooth(model, tokenizer, smooth_config, args):
         from .migration import migration_qwen2_vl as migration
     elif model_type == "qwen2_5_vl":
         from .migration import migration_qwen2_vl as migration
+    elif model_type == "qwen3":
+        from .migration import migration_qwen3 as migration
     elif model_type == "qwen3_vl":
         from .migration import migration_qwen2_vl as migration
     else:

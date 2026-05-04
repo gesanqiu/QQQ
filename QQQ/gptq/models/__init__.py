@@ -1,7 +1,8 @@
 from .llama import QuantizedLlamaForCausalLM, gptq_llama_func
 from .qwen2 import QuantizedQwen2ForCausalLM, gptq_qwen2_func
-from .qwen2_5_vl import QuantizedQwen2_5_VLForConditionalGeneration, gptq_qwen2_5_vl_func
 from .qwen2_vl import QuantizedQwen2VLForConditionalGeneration, gptq_qwen2_vl_func
+from .qwen2_5_vl import QuantizedQwen2_5_VLForConditionalGeneration, gptq_qwen2_5_vl_func
+from .qwen3 import QuantizedQwen3ForCausalLM, gptq_qwen3_func
 from .qwen3_vl import QuantizedQwen3VLForConditionalGeneration, gptq_qwen3_vl_func
 
 _GPTQ_MODEL_FUNC = {
@@ -9,6 +10,7 @@ _GPTQ_MODEL_FUNC = {
     "qwen2": gptq_qwen2_func,
     "qwen2_vl": gptq_qwen2_vl_func,
     "qwen2_5_vl": gptq_qwen2_5_vl_func,
+    "qwen3": gptq_qwen3_func,
     "qwen3_vl": gptq_qwen3_vl_func,
 }
 
@@ -17,6 +19,7 @@ _QUANTIZED_MODEL_CLASS = {
     "qwen2": QuantizedQwen2ForCausalLM,
     "qwen2_vl": QuantizedQwen2VLForConditionalGeneration,
     "qwen2_5_vl": QuantizedQwen2_5_VLForConditionalGeneration,
+    "qwen3": QuantizedQwen3ForCausalLM,
     "qwen3_vl": QuantizedQwen3VLForConditionalGeneration,
 }
 

@@ -3,8 +3,9 @@ import argparse
 import torch
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLDecoderLayer
 from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLDecoderLayer
+from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLDecoderLayer
+from transformers.models.qwen3.modeling_qwen3 import Qwen3DecoderLayer
 from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextDecoderLayer
 
 from QQQ.utils import build_model_and_tokenizer, get_model_type
@@ -191,6 +192,51 @@ def export_smoothed_qwen2_5_vl(model, scale_list):
     return model
 
 
+def export_smoothed_qwen3(model, scale_list):
+    """Apply smooth scales to Qwen3 decoder layers (head-dim q_norm/k_norm untouched)."""
+    cnt = 0
+    for name, module in model.named_modules():
+        if isinstance(module, Qwen3DecoderLayer):
+            attn_ln = module.input_layernorm
+            q, k, v, o = (
+                module.self_attn.q_proj,
+                module.self_attn.k_proj,
+                module.self_attn.v_proj,
+                module.self_attn.o_proj,
+            )
+            attn_ln.weight.data /= scale_list[cnt].to(attn_ln.weight.data.device)
+            q.weight.data *= scale_list[cnt].to(q.weight.data.device)
+            k.weight.data *= scale_list[cnt].to(k.weight.data.device)
+            v.weight.data *= scale_list[cnt].to(v.weight.data.device)
+            cnt += 1
+
+            attn_cfg = module.self_attn.config
+            is_full_mha = attn_cfg.num_key_value_heads == attn_cfg.num_attention_heads
+            if is_full_mha:
+                o.weight.data *= scale_list[cnt].to(o.weight.data.device)
+                v.weight.data /= scale_list[cnt].reshape(-1, 1).to(v.weight.data.device)
+                if getattr(v, "bias", None) is not None:
+                    v.bias.data /= scale_list[cnt].to(v.bias.data.device)
+                if getattr(o, "bias", None) is not None:
+                    o.bias.data *= scale_list[cnt].to(o.bias.data.device)
+            cnt += 1
+
+            ffn_ln = module.post_attention_layernorm
+            gate = module.mlp.gate_proj
+            up = module.mlp.up_proj
+            down = module.mlp.down_proj
+            ffn_ln.weight.data /= scale_list[cnt].to(ffn_ln.weight.data.device)
+            gate.weight.data *= scale_list[cnt].to(gate.weight.data.device)
+            up.weight.data *= scale_list[cnt].to(up.weight.data.device)
+            cnt += 1
+
+            down.weight.data *= scale_list[cnt].to(down.weight.data.device)
+            up.weight.data /= scale_list[cnt].reshape(-1, 1).to(up.weight.data.device)
+            cnt += 1
+
+    return model
+
+
 def export_smoothed_qwen3_vl(model, scale_list):
     """Apply smooth scales to Qwen3-VL text decoder layers (no biases on q/k/v/o)."""
     cnt = 0
@@ -241,6 +287,8 @@ def export_smoothed_model(model, scale_list):
         model = export_smoothed_qwen2_vl(model, scale_list)
     elif model_type == "qwen2_5_vl":
         model = export_smoothed_qwen2_5_vl(model, scale_list)
+    elif model_type == "qwen3":
+        model = export_smoothed_qwen3(model, scale_list)
     elif model_type == "qwen3_vl":
         model = export_smoothed_qwen3_vl(model, scale_list)
     else:

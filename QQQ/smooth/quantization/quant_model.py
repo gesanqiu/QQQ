@@ -3,6 +3,7 @@ from QQQ.smooth.models import (
     QuantizedQwen2Model,
     QuantizedQwen2_5_VLTextModel,
     QuantizedQwen2VLTextModel,
+    QuantizedQwen3Model,
     QuantizedQwen3VLTextModel,
 )
 from QQQ.smooth.quantization.observer import ObserverBase
@@ -11,6 +12,7 @@ from QQQ.utils import get_language_model, get_model_type, prepare_for_inference,
 _QUANTIZED_MODEL_MAP = {
     "llama": QuantizedLlamaModel,
     "qwen2": QuantizedQwen2Model,
+    "qwen3": QuantizedQwen3Model,
     "qwen2_vl": QuantizedQwen2VLTextModel,
     "qwen2_5_vl": QuantizedQwen2_5_VLTextModel,
     "qwen3_vl": QuantizedQwen3VLTextModel,
