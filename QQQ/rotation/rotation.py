@@ -1,8 +1,11 @@
 # Adapted from https://github.com/spcl/QuaRot/blob/main/fake_quant/rotation_utils.py
+import logging
 import typing
 
 import torch
 import tqdm
+
+logger = logging.getLogger(__name__)
 
 from QQQ.utils import (
     free_memory,
@@ -15,6 +18,42 @@ from QQQ.utils import (
 )
 
 from .hadamard_utils import apply_exact_had_to_linear, random_hadamard_matrix
+
+
+def duplicate_lm_head_if_tied(model) -> None:
+    """
+    QuaRot applies the orthogonal map separately to the embedding table and to the output projection,
+    so we need to duplicate the lm_head from the embeddings if tie_word_embeddings is True.
+    """
+    lang_config = get_language_config(model)
+    if not getattr(lang_config, "tie_word_embeddings", False):
+        return
+    embeddings = get_embeddings(model)
+    if not embeddings:
+        logger.warning("tie_word_embeddings True but no embedding modules found; skipping lm_head duplicate")
+        return
+    lm_head = get_lm_head(model)
+    emb = embeddings[0]
+    if lm_head.weight.shape != emb.weight.shape:
+        logger.warning(
+            "lm_head %s vs embedding %s shape mismatch; skipping duplicate",
+            lm_head.weight.shape,
+            emb.weight.shape,
+        )
+        return
+
+    lm_head.weight = torch.nn.Parameter(emb.weight.detach().clone())
+
+    lang_config.tie_word_embeddings = False
+    root_cfg = model.config
+    root_cfg.tie_word_embeddings = False
+    text_cfg = getattr(root_cfg, "text_config", None)
+    if text_cfg is not None:
+        text_cfg.tie_word_embeddings = False
+
+    logger.info(
+        "Duplicated lm_head from embeddings and set tie_word_embeddings=False"
+    )
 
 
 def fuse_ln_linear(layernorm: torch.nn.Module, linear_layers: typing.Iterable[torch.nn.Linear]) -> None:
@@ -147,7 +186,9 @@ def rotate_model(model, rotation_config, args, Q=None):
     lang_config = get_language_config(model)
     num_heads = lang_config.num_attention_heads
     model_dim = lang_config.hidden_size
-    head_dim = model_dim // num_heads
+    head_dim = getattr(lang_config, "head_dim", None)
+    if head_dim is None:
+        head_dim = model_dim // num_heads
 
     Q = get_orthogonal_matrix(model_dim, rotation_config.rotate_mode, device) if Q is None else Q
     rotate_embeddings(model, Q, device)
