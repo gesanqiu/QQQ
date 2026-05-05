@@ -51,7 +51,7 @@ class Qwen3MigratorMixin:
         from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb
         from transformers.models.qwen2.modeling_qwen2 import repeat_kv
 
-        B, N, C = input.shape
+        B, N, _ = input.shape
         head_dim = self.extra_dict["head_dim"]
         qkv = torch.matmul(input, weight.T)
         if bias is not None:
@@ -87,7 +87,9 @@ class Qwen3MigratorMixin:
             dropout_p=0.0,
             is_causal=self.extra_dict["attention_mask"] is None and N > 1,
         )
-        output = output.transpose(1, 2).contiguous().view(B, N, C)
+
+        attn_out_dim = self.extra_dict["num_heads"] * head_dim
+        output = output.transpose(1, 2).contiguous().view(B, N, attn_out_dim)
         return output[self.extra_dict["observation_mask"] == 1].to(torch.float32)
 
 
